@@ -20,37 +20,16 @@ document.addEventListener('DOMContentLoaded', () => {
     let currentActiveJobs = [];
     let currentHistoryJobs = [];
     let modalResolver = null;
-    let eventSource = null;
 
-    // Iniciar conexión en tiempo real con Server-Sent Events (SSE)
-    initEventSource();
+    // Iniciar polling silencioso rápido cada 3 segundos
+    setInterval(fetchStatus, 3000);
+    // Primera carga inmediata
+    fetchStatus();
 
     // Configuración de eventos de tabla dinámica
     setupTableListeners();
 
     // --- FUNCIONES DEL DASHBOARD ---
-
-    // Inicializa la conexión persistente con el servidor
-    function initEventSource() {
-        if (eventSource) {
-            eventSource.close();
-        }
-
-        eventSource = new EventSource('/api/events');
-
-        eventSource.onmessage = (event) => {
-            try {
-                const data = JSON.parse(event.data);
-                updateUI(data);
-            } catch (err) {
-                console.error('Error procesando evento SSE:', err);
-            }
-        };
-
-        eventSource.onerror = (err) => {
-            console.error('Error en conexión SSE, intentando reconectar...', err);
-        };
-    }
 
     // Actualiza la interfaz gráfica con nuevos datos
     function updateUI(data) {
@@ -77,7 +56,7 @@ document.addEventListener('DOMContentLoaded', () => {
         }
     }
 
-    // Método fallback para forzar actualización inmediata tras una acción del usuario
+    // Consulta el estado del servidor de manera asíncrona
     async function fetchStatus() {
         try {
             const response = await fetch('/api/status');
@@ -85,7 +64,7 @@ document.addEventListener('DOMContentLoaded', () => {
             const data = await response.json();
             updateUI(data);
         } catch (error) {
-            console.error('Error actualizando dashboard manualmente:', error);
+            console.error('Error actualizando dashboard:', error);
         }
     }
 
@@ -186,7 +165,7 @@ document.addEventListener('DOMContentLoaded', () => {
                 const user = e.target.getAttribute('data-user');
                 const confirmed = await showConfirmModal(
                     'Reimprimir Documento',
-                    `¿Deseas enviar a reimprimir el trabajo #${jobId} en la impresora "${printer}"?`
+                    `¿Deseas enviar a reimprimir el trabajo #${jobId} (Usuario: ${user}) en la impresora "${printer}"?`
                 );
                 if (confirmed) {
                     performAction('/reprint', { job_id: jobId, printer, user });

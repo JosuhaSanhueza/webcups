@@ -142,33 +142,6 @@ def api_status():
         return jsonify({"error": "Error interno del servidor"}), 500
 
 
-@app.route("/api/events")
-def api_events():
-    def event_stream():
-        last_data = None
-        while True:
-            try:
-                active = get_active_jobs()
-                history = get_history()
-                status_text, status_class = get_status(active)
-
-                current_data = {
-                    "active": active,
-                    "history": history,
-                    "status_text": status_text,
-                    "status_class": status_class
-                }
-
-                if current_data != last_data:
-                    last_data = current_data
-                    yield f"data: {json.dumps(current_data)}\n\n"
-            except Exception as e:
-                print("SSE Error:", e)
-            time.sleep(2)
-
-    return Response(event_stream(), mimetype="text/event-stream")
-
-
 @app.route("/cancel", methods=["POST"])
 def cancel():
     try:
