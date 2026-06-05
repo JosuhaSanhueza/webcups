@@ -1,0 +1,182 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Impresiones Lab2 - Panel de Control</title>
+    <!-- Google Fonts: Inter -->
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&display=swap" rel="stylesheet">
+    <!-- Icono -->
+    <link rel="icon" href="{{ url_for('static', filename='favicon.ico') }}">
+    <!-- Estilos -->
+    <link rel="stylesheet" href="{{ url_for('static', filename='css/style.css') }}">
+</head>
+<body>
+    <div class="background-glow"></div>
+    
+    <div class="container">
+        <!-- Encabezado -->
+        <header class="app-header">
+            <div class="header-logo">
+                <img src="{{ url_for('static', filename='printer.png') }}" class="header-icon icon-pulse" alt="Logo Impresora">
+                <div>
+                    <h1>Panel de Control</h1>
+                    <p class="subtitle">Administrador de Impresiones Lab2</p>
+                </div>
+            </div>
+        </header>
+
+        <!-- Tarjetas de Resumen -->
+        <section class="cards-grid">
+            <div class="card glass-card">
+                <div class="card-icon">⏳</div>
+                <div class="card-content">
+                    <h3>Trabajos Activos</h3>
+                    <p class="counter" id="count-active">{{ active|length }}</p>
+                </div>
+            </div>
+
+            <div class="card glass-card">
+                <div class="card-icon">📜</div>
+                <div class="card-content">
+                    <h3>Historial Reciente</h3>
+                    <p class="counter" id="count-history">{{ history|length }}</p>
+                </div>
+            </div>
+
+            <div class="card glass-card">
+                <div class="card-icon">⚡</div>
+                <div class="card-content">
+                    <h3>Estado Impresora</h3>
+                    <p class="status-indicator {{ status_class }}" id="printer-status-text">{{ status_text }}</p>
+                </div>
+            </div>
+        </section>
+
+        <!-- Contenido Principal -->
+        <main class="dashboard-main">
+            <!-- Sección Trabajos Activos -->
+            <section class="table-section glass-card">
+                <div class="table-header">
+                    <h2>🟢 Trabajos Activos</h2>
+                    <span class="badge" id="active-badge">{{ active|length }} en cola</span>
+                </div>
+                <div class="table-wrapper">
+                    <table id="active-jobs-table">
+                        <thead>
+                            <tr>
+                                <th>Job ID</th>
+                                <th>Equipo / Usuario</th>
+                                <th>Impresora</th>
+                                <th class="text-right">Acción</th>
+                            </tr>
+                        </thead>
+                        <tbody id="active-jobs-tbody">
+                            {% if active %}
+                                {% for job in active %}
+                                <tr data-job-id="{{ job.id }}">
+                                    <td class="font-mono text-cyan">{{ job.id }}</td>
+                                    <td>
+                                        <div class="user-cell">
+                                            <span class="avatar">👤</span>
+                                            <span>{{ job.user }}</span>
+                                        </div>
+                                    </td>
+                                    <td><span class="printer-tag">{{ job.printer }}</span></td>
+                                    <td class="text-right">
+                                        <button class="btn btn-danger btn-sm action-cancel" data-job-id="{{ job.id }}">
+                                            Cancelar
+                                        </button>
+                                    </td>
+                                </tr>
+                                {% endfor %}
+                            {% else %}
+                                <tr class="empty-row">
+                                    <td colspan="4">No hay trabajos activos en este momento.</td>
+                                </tr>
+                            {% endif %}
+                        </tbody>
+                    </table>
+                </div>
+            </section>
+
+            <!-- Sección Historial -->
+            <section class="table-section glass-card">
+                <div class="table-header">
+                    <h2>📜 Historial de Impresión</h2>
+                    <span class="badge" id="history-badge">Últimos {{ history|length }}</span>
+                </div>
+                <div class="table-wrapper">
+                    <table id="history-jobs-table">
+                        <thead>
+                            <tr>
+                                <th>Job ID</th>
+                                <th>Equipo / Usuario</th>
+                                <th>Impresora</th>
+                                <th>Fecha / Hora</th>
+                                <th class="text-right">Acción</th>
+                            </tr>
+                        </thead>
+                        <tbody id="history-jobs-tbody">
+                            {% if history %}
+                                {% for job in history %}
+                                <tr data-job-id="{{ job.id }}">
+                                    <td class="font-mono">{{ job.id }}</td>
+                                    <td>
+                                        <div class="user-cell">
+                                            <span class="avatar">👤</span>
+                                            <span>{{ job.user }}</span>
+                                        </div>
+                                    </td>
+                                    <td><span class="printer-tag">{{ job.printer }}</span></td>
+                                    <td class="text-muted">{{ job.date }}</td>
+                                    <td class="text-right">
+                                        <button class="btn btn-primary btn-sm action-reprint" 
+                                                data-job-id="{{ job.id }}" 
+                                                data-printer="{{ job.printer }}"
+                                                data-user="{{ job.user }}">
+                                            Reimprimir
+                                        </button>
+                                    </td>
+                                </tr>
+                                {% endfor %}
+                            {% else %}
+                                <tr class="empty-row">
+                                    <td colspan="5">El historial de impresión está vacío.</td>
+                                </tr>
+                            {% endif %}
+                        </tbody>
+                    </table>
+                </div>
+            </section>
+        </main>
+
+        <!-- Pie de página -->
+        <footer class="app-footer">
+            <p>WebCUPS &copy; 2026 | Desarrollado para Proxmox & CUPS Server</p>
+        </footer>
+    </div>
+
+    <!-- Modal de Confirmación -->
+    <div id="confirm-modal" class="modal-overlay">
+        <div class="modal glass-card animate-zoom">
+            <div class="modal-header">
+                <h3 id="modal-title">¿Confirmar Acción?</h3>
+                <button class="modal-close" id="modal-close-btn">&times;</button>
+            </div>
+            <div class="modal-body">
+                <p id="modal-message">¿Estás seguro de que deseas realizar esta acción?</p>
+            </div>
+            <div class="modal-footer">
+                <button class="btn btn-secondary" id="modal-btn-cancel">Cancelar</button>
+                <button class="btn btn-primary" id="modal-btn-confirm">Confirmar</button>
+            </div>
+        </div>
+    </div>
+
+    <!-- Scripts -->
+    <script src="{{ url_for('static', filename='js/app.js') }}"></script>
+</body>
+</html>

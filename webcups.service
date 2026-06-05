@@ -1,0 +1,14 @@
+[Unit]
+Description=Servicio WebCUPS para Administrar Impresora
+After=network.target cups.service
+
+[Service]
+# Puedes cambiar 'root' por un usuario específico (ej: www-data) que pertenezca al grupo lp/lpadmin
+User=root
+WorkingDirectory=/var/www/webcups
+ExecStart=/var/www/webcups/venv/bin/gunicorn -c /var/www/webcups/.gunicorn/gunicorn.conf.py app:app
+Restart=always
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target

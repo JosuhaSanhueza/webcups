@@ -1,0 +1,24 @@
+# Entorno virtual
+venv/
+ENV/
+
+# Caché de Python
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+
+# Archivos de Gunicorn locales (si los hay)
+*.log
+*.pid
+
+# IDEs y editores
+.vscode/
+.idea/
+.project
+.settings/
+.DS_Store
+
+# Archivos temporales de agentes
+.gemini/
+.system_generated/
