@@ -93,16 +93,9 @@ body {
     color: var(--text-muted);
     font-size: 0.9rem;
 }
-
-.icon-pulse {
-    display: inline-block;
-    animation: pulse-slow 3s infinite ease-in-out;
-}
-
 .header-icon {
-    width: 42px;
-    height: 42px;
-    object-fit: contain;
+    display: block;
+    flex-shrink: 0;
 }
 
 /* Tarjetas (Cards) */
