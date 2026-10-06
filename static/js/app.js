@@ -15,6 +15,18 @@ document.addEventListener('DOMContentLoaded', () => {
     const modalCloseBtn = document.getElementById('modal-close-btn');
     const modalBtnCancel = document.getElementById('modal-btn-cancel');
     const modalBtnConfirm = document.getElementById('modal-btn-confirm');
+
+    // Vista previa
+    const previewModal = document.getElementById('preview-modal');
+    const previewTitle = document.getElementById('preview-title');
+    const previewImage = document.getElementById('preview-image');
+    const previewPage = document.getElementById('preview-page');
+    const previewPrev = document.getElementById('preview-prev');
+    const previewNext = document.getElementById('preview-next');
+    const previewCloseBtn = document.getElementById('preview-close-btn');
+    const reviewToggle = document.getElementById('review-mode-toggle');
+    let previewJob = null;
+    let previewCurrentPage = 1;
     
     // Estado interno para evitar repintados innecesarios
     let currentActiveJobs = [];
@@ -43,6 +55,9 @@ document.addEventListener('DOMContentLoaded', () => {
         printerStatus.textContent = data.status_text;
         printerStatus.className = `status-indicator ${data.status_class}`;
 
+        // Estado del modo revisión
+        reviewToggle.checked = data.review_mode;
+
         // Actualizar tabla de activos (si hay cambios)
         if (hasJobsChanged(currentActiveJobs, data.active)) {
             currentActiveJobs = data.active;
@@ -70,45 +85,77 @@ document.addEventListener('DOMContentLoaded', () => {
 
     // Compara si dos arreglos de trabajos de impresión son distintos
     function hasJobsChanged(oldJobs, newJobs) {
-        if (oldJobs.length !== newJobs.length) return true;
-        for (let i = 0; i < oldJobs.length; i++) {
-            if (oldJobs[i].id !== newJobs[i].id || 
-                oldJobs[i].user !== newJobs[i].user || 
-                oldJobs[i].printer !== newJobs[i].printer ||
-                (oldJobs[i].date && oldJobs[i].date !== newJobs[i].date)) {
-                return true;
-            }
-        }
-        return false;
+        return JSON.stringify(oldJobs) !== JSON.stringify(newJobs);
     }
 
     function renderActiveJobs(jobs) {
         if (jobs.length === 0) {
             activeTbody.innerHTML = `
                 <tr class="empty-row">
-                    <td colspan="4">No hay trabajos activos en este momento.</td>
+                    <td colspan="6">No hay trabajos activos en este momento.</td>
                 </tr>
             `;
             return;
         }
 
         activeTbody.innerHTML = jobs.map(job => `
-            <tr data-job-id="${job.id}">
+            <tr data-job-id="${job.id}" class="${job.held ? 'row-held' : ''}">
+                <td>${renderThumb(job)}</td>
                 <td class="font-mono text-cyan">${job.id}</td>
                 <td>
                     <div class="user-cell">
                         <span class="avatar">👤</span>
-                        <span>${escapeHtml(job.user)}</span>
+                        <div>
+                            <div>${escapeHtml(job.user)}</div>
+                            ${job.name ? `<div class="job-name" title="${escapeHtml(job.name)}">${escapeHtml(job.name)}</div>` : ''}
+                        </div>
                     </div>
                 </td>
                 <td><span class="printer-tag">${escapeHtml(job.printer)}</span></td>
+                <td>${renderSheets(job)}</td>
                 <td class="text-right">
-                    <button class="btn btn-danger btn-sm action-cancel" data-job-id="${job.id}">
-                        Cancelar
-                    </button>
+                    ${job.held ? `
+                        <div class="action-group">
+                            <button class="btn btn-success btn-sm action-approve" data-job-id="${job.id}" data-user="${escapeHtml(job.user)}">
+                                Autorizar
+                            </button>
+                            <button class="btn btn-danger btn-sm action-deny" data-job-id="${job.id}" data-user="${escapeHtml(job.user)}">
+                                Denegar
+                            </button>
+                        </div>
+                    ` : `
+                        <button class="btn btn-danger btn-sm action-cancel" data-job-id="${job.id}">
+                            Cancelar
+                        </button>
+                    `}
                 </td>
             </tr>
         `).join('');
+    }
+
+    function renderThumb(job) {
+        if (!job.preview) {
+            return `<div class="thumb thumb-empty" title="Formato sin vista previa">📄</div>`;
+        }
+        return `
+            <button class="thumb action-preview" data-job-id="${job.id}" data-pages="${job.pages || 1}"
+                    data-name="${escapeHtml(job.name || '')}" title="Ver documento">
+                <img src="/preview/${job.id}.png" alt="Página 1 del trabajo ${job.id}" loading="lazy">
+            </button>
+        `;
+    }
+
+    function renderSheets(job) {
+        if (!job.sheets) {
+            return `<span class="text-muted">—</span>`;
+        }
+        const details = [`${job.pages} pág.`];
+        if (job.copies > 1) details.push(`${job.copies} copias`);
+        if (job.duplex) details.push('doble cara');
+        return `
+            <div class="sheets-count">${job.sheets}</div>
+            <div class="sheets-detail">${details.join(' · ')}</div>
+        `;
     }
 
     function renderHistoryJobs(jobs) {
@@ -146,6 +193,34 @@ document.addEventListener('DOMContentLoaded', () => {
 
     function setupTableListeners() {
         document.body.addEventListener('click', async (e) => {
+            // Vista previa
+            const thumb = e.target.closest('.action-preview');
+            if (thumb) {
+                openPreview(thumb.getAttribute('data-job-id'), Number(thumb.getAttribute('data-pages')), thumb.getAttribute('data-name'));
+                return;
+            }
+
+            // Autorizar
+            if (e.target.classList.contains('action-approve')) {
+                performAction('/approve', {
+                    job_id: e.target.getAttribute('data-job-id'),
+                    user: e.target.getAttribute('data-user')
+                });
+            }
+
+            // Denegar
+            if (e.target.classList.contains('action-deny')) {
+                const jobId = e.target.getAttribute('data-job-id');
+                const user = e.target.getAttribute('data-user');
+                const confirmed = await showConfirmModal(
+                    'Denegar Impresión',
+                    `¿Deseas denegar y eliminar el trabajo #${jobId} (Usuario: ${user})? No se imprimirá.`
+                );
+                if (confirmed) {
+                    performAction('/deny', { job_id: jobId });
+                }
+            }
+
             // Cancelar
             if (e.target.classList.contains('action-cancel')) {
                 const jobId = e.target.getAttribute('data-job-id');
@@ -235,6 +310,53 @@ document.addEventListener('DOMContentLoaded', () => {
         if (e.target === confirmModal) {
             closeModal(false);
         }
+    });
+
+    // --- MODO REVISIÓN ---
+
+    reviewToggle.addEventListener('change', async () => {
+        const enabled = reviewToggle.checked;
+        const confirmed = await showConfirmModal(
+            enabled ? 'Activar Modo Revisión' : 'Desactivar Modo Revisión',
+            enabled
+                ? 'Cada nueva impresión quedará retenida hasta que la autorices desde este panel.'
+                : 'Las nuevas impresiones se imprimirán directamente sin revisión. Los trabajos ya retenidos seguirán esperando autorización.'
+        );
+        if (!confirmed) {
+            reviewToggle.checked = !enabled;
+            return;
+        }
+        performAction('/review-mode', { enabled: enabled ? '1' : '0' });
+    });
+
+    // --- VISTA PREVIA ---
+
+    function openPreview(jobId, pages, name) {
+        previewJob = { id: jobId, pages: pages || 1 };
+        previewTitle.textContent = name ? `#${jobId} · ${name}` : `Trabajo #${jobId}`;
+        showPreviewPage(1);
+        previewModal.classList.add('show');
+    }
+
+    function showPreviewPage(page) {
+        previewCurrentPage = page;
+        previewImage.src = `/preview/${previewJob.id}.png?large=1&page=${page}`;
+        previewPage.textContent = `Página ${page} de ${previewJob.pages}`;
+        previewPrev.disabled = page <= 1;
+        previewNext.disabled = page >= previewJob.pages;
+    }
+
+    function closePreview() {
+        previewModal.classList.remove('show');
+        previewImage.removeAttribute('src');
+        previewJob = null;
+    }
+
+    previewPrev.addEventListener('click', () => showPreviewPage(previewCurrentPage - 1));
+    previewNext.addEventListener('click', () => showPreviewPage(previewCurrentPage + 1));
+    previewCloseBtn.addEventListener('click', closePreview);
+    previewModal.addEventListener('click', (e) => {
+        if (e.target === previewModal) closePreview();
     });
 
     // --- UTILIDADES ---

@@ -36,6 +36,13 @@
                     <p class="subtitle">Administrador de Impresiones Lab2</p>
                 </div>
             </div>
+            <div class="header-actions">
+                <label class="review-toggle" title="Retener cada impresión hasta que sea autorizada">
+                    <input type="checkbox" id="review-mode-toggle" {% if review_mode %}checked{% endif %}>
+                    <span class="toggle-track"><span class="toggle-thumb"></span></span>
+                    <span>Modo revisión</span>
+                </label>
+            </div>
         </header>
 
         <!-- Tarjetas de Resumen -->
@@ -77,36 +84,18 @@
                     <table id="active-jobs-table">
                         <thead>
                             <tr>
+                                <th>Vista previa</th>
                                 <th>Job ID</th>
                                 <th>Equipo / Usuario</th>
                                 <th>Impresora</th>
+                                <th>Hojas</th>
                                 <th class="text-right">Acción</th>
                             </tr>
                         </thead>
                         <tbody id="active-jobs-tbody">
-                            {% if active %}
-                                {% for job in active %}
-                                <tr data-job-id="{{ job.id }}">
-                                    <td class="font-mono text-cyan">{{ job.id }}</td>
-                                    <td>
-                                        <div class="user-cell">
-                                            <span class="avatar">👤</span>
-                                            <span>{{ job.user }}</span>
-                                        </div>
-                                    </td>
-                                    <td><span class="printer-tag">{{ job.printer }}</span></td>
-                                    <td class="text-right">
-                                        <button class="btn btn-danger btn-sm action-cancel" data-job-id="{{ job.id }}">
-                                            Cancelar
-                                        </button>
-                                    </td>
-                                </tr>
-                                {% endfor %}
-                            {% else %}
-                                <tr class="empty-row">
-                                    <td colspan="4">No hay trabajos activos en este momento.</td>
-                                </tr>
-                            {% endif %}
+                            <tr class="empty-row">
+                                <td colspan="6">Cargando trabajos...</td>
+                            </tr>
                         </tbody>
                     </table>
                 </div>
@@ -182,6 +171,24 @@
             <div class="modal-footer">
                 <button class="btn btn-secondary" id="modal-btn-cancel">Cancelar</button>
                 <button class="btn btn-primary" id="modal-btn-confirm">Confirmar</button>
+            </div>
+        </div>
+    </div>
+
+    <!-- Modal de Vista Previa -->
+    <div id="preview-modal" class="modal-overlay">
+        <div class="modal modal-preview glass-card animate-zoom">
+            <div class="modal-header">
+                <h3 id="preview-title">Vista previa</h3>
+                <button class="modal-close" id="preview-close-btn">&times;</button>
+            </div>
+            <div class="modal-body preview-body">
+                <img id="preview-image" alt="Vista previa del documento">
+            </div>
+            <div class="modal-footer preview-footer">
+                <button class="btn btn-secondary btn-sm" id="preview-prev">&larr; Anterior</button>
+                <span class="text-muted" id="preview-page">Página 1</span>
+                <button class="btn btn-secondary btn-sm" id="preview-next">Siguiente &rarr;</button>
             </div>
         </div>
     </div>
