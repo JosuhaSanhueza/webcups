@@ -359,6 +359,26 @@ document.addEventListener('DOMContentLoaded', () => {
         if (e.target === previewModal) closePreview();
     });
 
+    // --- TEMA CLARO / OSCURO ---
+
+    const themeToggle = document.getElementById('theme-toggle');
+    const prefersLight = window.matchMedia('(prefers-color-scheme: light)');
+
+    themeToggle.addEventListener('click', () => {
+        const next = document.documentElement.getAttribute('data-theme') === 'light' ? 'dark' : 'light';
+        document.documentElement.setAttribute('data-theme', next);
+        try { localStorage.setItem('webcups-theme', next); } catch (e) {}
+    });
+
+    // Seguir el tema del sistema mientras el usuario no haya elegido uno
+    prefersLight.addEventListener('change', (e) => {
+        let saved = null;
+        try { saved = localStorage.getItem('webcups-theme'); } catch (err) {}
+        if (!saved) {
+            document.documentElement.setAttribute('data-theme', e.matches ? 'light' : 'dark');
+        }
+    });
+
     // --- UTILIDADES ---
 
     function escapeHtml(str) {

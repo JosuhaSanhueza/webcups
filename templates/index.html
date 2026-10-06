@@ -10,6 +10,15 @@
     <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&display=swap" rel="stylesheet">
     <!-- Icono -->
     <link rel="icon" href="{{ url_for('static', filename='favicon.ico') }}">
+    <!-- Tema: aplicar antes de pintar para evitar parpadeo -->
+    <script>
+        (function () {
+            var saved = null;
+            try { saved = localStorage.getItem('webcups-theme'); } catch (e) {}
+            var light = window.matchMedia && window.matchMedia('(prefers-color-scheme: light)').matches;
+            document.documentElement.setAttribute('data-theme', saved || (light ? 'light' : 'dark'));
+        })();
+    </script>
     <!-- Estilos -->
     <link rel="stylesheet" href="{{ url_for('static', filename='css/style.css') }}">
 </head>
@@ -37,6 +46,10 @@
                 </div>
             </div>
             <div class="header-actions">
+                <button class="theme-toggle" id="theme-toggle" title="Cambiar tema claro/oscuro" aria-label="Cambiar tema claro/oscuro">
+                    <svg class="icon-moon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 12.79A9 9 0 1 1 11.21 3 7 7 0 0 0 21 12.79z"/></svg>
+                    <svg class="icon-sun" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="4"/><path d="M12 2v2M12 20v2M4.93 4.93l1.41 1.41M17.66 17.66l1.41 1.41M2 12h2M20 12h2M4.93 19.07l1.41-1.41M17.66 6.34l1.41-1.41"/></svg>
+                </button>
                 <label class="review-toggle" title="Retener cada impresión hasta que sea autorizada">
                     <input type="checkbox" id="review-mode-toggle" {% if review_mode %}checked{% endif %}>
                     <span class="toggle-track"><span class="toggle-thumb"></span></span>
