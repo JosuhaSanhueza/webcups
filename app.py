@@ -6,6 +6,7 @@ import traceback
 import json
 import csv
 import io
+import gzip
 import re
 import shutil
 
@@ -35,31 +36,64 @@ def spool_file(job_id):
 
 
 def get_job_pdf(job_id):
-    """Devuelve la ruta a un PDF del documento (convierte PostScript si hace falta), o None."""
+    """Devuelve la ruta a un PDF del documento (descomprime gzip, quita cabeceras PJL
+    y convierte PostScript si hace falta), o None si el formato no se puede previsualizar."""
     src = spool_file(job_id)
     if not os.path.exists(src):
         return None
 
+    base = os.path.join(CACHE_DIR, f"{job_id}-{int(os.path.getmtime(src))}")
+    cached = base + ".pdf"
+    if os.path.exists(cached):
+        return cached
+
     with open(src, "rb") as f:
-        head = f.read(1024)
+        head = f.read(4096)
+
+    # Documento comprimido por el cliente IPP (compression=gzip)
+    if head.startswith(b"\x1f\x8b"):
+        raw = base + ".raw"
+        if not os.path.exists(raw):
+            with gzip.open(src, "rb") as fin, open(raw + ".tmp", "wb") as fout:
+                shutil.copyfileobj(fin, fout)
+            os.replace(raw + ".tmp", raw)
+        src = raw
+        with open(src, "rb") as f:
+            head = f.read(4096)
+
+    tmp = cached + ".tmp"
 
     if head.startswith(b"%PDF"):
-        return src
+        if src.startswith(SPOOL_DIR):
+            return src
+        os.replace(src, cached)
+        return cached
+
+    # PDF precedido por una cabecera PJL (ej. "\x1b%-12345X@PJL ...")
+    pdf_start = head.find(b"%PDF")
+    if pdf_start > 0:
+        with open(src, "rb") as fin, open(tmp, "wb") as fout:
+            fin.seek(pdf_start)
+            shutil.copyfileobj(fin, fout)
+        os.replace(tmp, cached)
+        return cached
 
     if head.startswith(b"%!") or b"%!PS" in head:
-        cached = os.path.join(CACHE_DIR, f"{job_id}-{int(os.path.getmtime(src))}.pdf")
-        if not os.path.exists(cached):
-            tmp = cached + ".tmp"
-            subprocess.run(
-                ["gs", "-q", "-dSAFER", "-dBATCH", "-dNOPAUSE", "-sDEVICE=pdfwrite",
-                 f"-sOutputFile={tmp}", src],
-                capture_output=True, timeout=60
-            )
-            if os.path.exists(tmp):
-                os.replace(tmp, cached)
+        subprocess.run(
+            ["gs", "-q", "-dSAFER", "-dBATCH", "-dNOPAUSE", "-sDEVICE=pdfwrite",
+             f"-sOutputFile={tmp}", src],
+            capture_output=True, timeout=60
+        )
+        if os.path.exists(tmp):
+            os.replace(tmp, cached)
         return cached if os.path.exists(cached) else None
 
-    # Formatos crudos (PCL, ESC/P, raster...) no se pueden previsualizar
+    # Formatos crudos (PCL, ESC/P, raster...) no se pueden previsualizar.
+    # Se registra una sola vez por trabajo para poder diagnosticar el formato.
+    marker = base + ".unknown"
+    if not os.path.exists(marker):
+        open(marker, "w").close()
+        print(f"Trabajo {job_id}: formato sin vista previa, primeros bytes: {head[:48]!r}", flush=True)
     return None
 
 
@@ -73,7 +107,8 @@ def get_page_count(job_id):
     if os.path.exists(cache):
         with open(cache) as f:
             value = f.read().strip()
-        return int(value) if value.isdigit() else None
+        if value.isdigit():
+            return int(value)
 
     pages = None
     try:
@@ -87,8 +122,10 @@ def get_page_count(job_id):
         print(f"ERROR get_page_count {job_id}:")
         print(traceback.format_exc())
 
-    with open(cache, "w") as f:
-        f.write(str(pages or ""))
+    # Solo se guarda en caché un resultado válido, para reintentar si el formato cambia
+    if pages:
+        with open(cache, "w") as f:
+            f.write(str(pages))
     return pages
 
 
