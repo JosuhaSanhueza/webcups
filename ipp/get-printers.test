@@ -1,11 +1,12 @@
-# Lista las impresoras y si retienen los trabajos por defecto.
+# Lista las impresoras, su estado y si retienen los trabajos por defecto.
 # Uso: ipptool -c ipp://localhost/ get-printers.test
 {
     OPERATION CUPS-Get-Printers
     GROUP operation-attributes-tag
     ATTR charset attributes-charset utf-8
     ATTR naturalLanguage attributes-natural-language en
-    ATTR keyword requested-attributes printer-name,job-hold-until-default
+    ATTR keyword requested-attributes printer-name,printer-state,job-hold-until-default
     DISPLAY printer-name
+    DISPLAY printer-state
     DISPLAY job-hold-until-default
 }

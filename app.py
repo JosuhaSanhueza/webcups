@@ -12,6 +12,10 @@ import gzip
 import re
 import shutil
 import secrets
+import sqlite3
+import fcntl
+import threading
+from contextlib import closing
 
 app = Flask(__name__, static_folder="static")
 
@@ -37,7 +41,6 @@ app.config.update(
 
 MAX_LOGIN_FAILS = 5
 LOGIN_LOCK_SECONDS = 300
-LOGIN_FAILS = {}
 
 LAST_ACTION = {"type": None, "job": None, "user": None, "time": 0}
 
@@ -45,14 +48,61 @@ BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 IPP_DIR = os.path.join(BASE_DIR, "ipp")
 SPOOL_DIR = "/var/spool/cups"
 CACHE_DIR = os.environ.get("WEBCUPS_CACHE_DIR", "/tmp/webcups-cache")
+CACHE_MAX_AGE = 7 * 86400
+DB_PATH = os.environ.get("WEBCUPS_DB", "/var/lib/webcups/webcups.db")
+SYNC_SECONDS = 5
+IPP_URI = os.environ.get("WEBCUPS_IPP_URI", "ipp://localhost/")
+# Cola privada conectada a la impresora: la pública queda pausada y solo Autorizar saca trabajos
+OUTPUT_SUFFIX = "_Salida"
 os.makedirs(CACHE_DIR, exist_ok=True)
+os.makedirs(os.path.dirname(DB_PATH), exist_ok=True)
 
 
-def run_ipptool(test_file):
+def db():
+    conn = sqlite3.connect(DB_PATH, timeout=10)
+    conn.row_factory = sqlite3.Row
+    return conn
+
+
+def init_db():
+    with closing(db()) as conn, conn:
+        conn.execute("PRAGMA journal_mode=WAL")
+        conn.executescript("""
+            CREATE TABLE IF NOT EXISTS jobs (
+                id INTEGER PRIMARY KEY,
+                user TEXT DEFAULT '',
+                account TEXT DEFAULT '',
+                printer TEXT DEFAULT '',
+                name TEXT DEFAULT '',
+                pages INTEGER,
+                copies INTEGER DEFAULT 1,
+                duplex INTEGER DEFAULT 0,
+                sheets INTEGER,
+                state TEXT DEFAULT '',
+                created_at INTEGER,
+                finished_at INTEGER,
+                review_on INTEGER DEFAULT 0,
+                approved_at INTEGER,
+                denied_at INTEGER,
+                unauthorized INTEGER DEFAULT 0,
+                acknowledged INTEGER DEFAULT 0,
+                reprint_of INTEGER
+            );
+            CREATE INDEX IF NOT EXISTS jobs_created ON jobs(created_at);
+            CREATE TABLE IF NOT EXISTS login_attempts (ip TEXT, at INTEGER);
+            CREATE TABLE IF NOT EXISTS meta (key TEXT PRIMARY KEY, value TEXT);
+        """)
+
+
+init_db()
+
+
+def run_ipptool(test_file, **variables):
     """Ejecuta una consulta ipptool contra el CUPS local y devuelve filas (dict) del CSV."""
+    defines = [arg for name, value in variables.items() for arg in ("-d", f"{name}={value}")]
     output = subprocess.check_output(
-        ["ipptool", "-c", "ipp://localhost/", os.path.join(IPP_DIR, test_file)],
-        timeout=5
+        ["ipptool", "-c", *defines, IPP_URI, os.path.join(IPP_DIR, test_file)],
+        timeout=10
     ).decode(errors="ignore")
     return list(csv.DictReader(io.StringIO(output)))
 
@@ -155,23 +205,48 @@ def get_page_count(job_id):
     return pages
 
 
-def get_review_printers():
-    """Diccionario {impresora: True/False} indicando si retiene los trabajos para revisión."""
-    try:
-        return {
-            row["printer-name"]: row.get("job-hold-until-default") == "indefinite"
-            for row in run_ipptool("get-printers.test")
+def get_printers():
+    """Colas de CUPS: {nombre: {hold, stopped}}."""
+    return {
+        row["printer-name"]: {
+            "hold": row.get("job-hold-until-default") == "indefinite",
+            "stopped": row.get("printer-state") == "stopped"
         }
+        for row in run_ipptool("get-printers.test")
+    }
+
+
+def public_name(queue):
+    return queue[:-len(OUTPUT_SUFFIX)] if queue.endswith(OUTPUT_SUFFIX) else queue
+
+
+def get_review_printers():
+    """Diccionario {cola pública: True/False} indicando si retiene los trabajos para revisión."""
+    try:
+        return {name: info["hold"] for name, info in get_printers().items() if not name.endswith(OUTPUT_SUFFIX)}
     except Exception:
         print("ERROR get_review_printers:")
         print(traceback.format_exc())
         return {}
 
 
+def split_user(raw):
+    """Separa 'EQUIPO\\\\cuenta' (Windows) en equipo y cuenta."""
+    parts = [part for part in re.split(r"\\+", raw or "") if part]
+    return (parts[0] if parts else "", parts[1] if len(parts) > 1 else "")
+
+
+def compute_sheets(pages, copies, duplex):
+    if not pages:
+        return None
+    return ((pages + 1) // 2 if duplex else pages) * copies
+
+
 def get_active_jobs():
     try:
         jobs = []
-        for row in run_ipptool("get-jobs.test"):
+        printers = get_printers()
+        for row in run_ipptool("get-jobs.test", which="not-completed", limit=500):
             job_id = row.get("job-id", "")
             if not job_id.isdigit():
                 continue
@@ -179,16 +254,19 @@ def get_active_jobs():
             copies = int(row["copies"]) if row.get("copies", "").isdigit() else 1
             duplex = row.get("sides", "").startswith("two-sided")
             pages = get_page_count(job_id)
-            sheets = None
-            if pages:
-                sheets = ((pages + 1) // 2 if duplex else pages) * copies
+            sheets = compute_sheets(pages, copies, duplex)
+            user, account = split_user(row.get("job-originating-user-name"))
+            queue = row.get("job-printer-uri", "").rsplit("/", 1)[-1]
+            state = row.get("job-state")
+            paused = printers.get(queue, {}).get("stopped") and queue + OUTPUT_SUFFIX in printers
 
             jobs.append({
                 "id": job_id,
-                "user": row.get("job-originating-user-name", "").split("\\")[0],
-                "printer": row.get("job-printer-uri", "").rsplit("/", 1)[-1],
+                "user": user,
+                "account": account,
+                "printer": public_name(queue),
                 "name": row.get("job-name", ""),
-                "held": row.get("job-state") == "pending-held",
+                "held": state == "pending-held" or (state == "pending" and paused),
                 "copies": copies,
                 "duplex": duplex,
                 "pages": pages,
@@ -240,42 +318,194 @@ def get_active_jobs_lpstat():
     return jobs
 
 
-def get_history():
-    jobs = []
-    try:
-        # Nota: este archivo puede requerir permisos de lectura del grupo lp
-        if os.path.exists("/var/log/cups/page_log"):
-            with open("/var/log/cups/page_log") as f:
-                lines = f.readlines()
-        else:
-            lines = []
+def record_job(conn, row, review, baseline):
+    """Inserta o actualiza un trabajo de CUPS y marca los impresos sin autorización."""
+    job_id = int(row["job-id"])
+    state = row.get("job-state", "")
+    copies = int(row["copies"]) if row.get("copies", "").isdigit() else 1
+    duplex = row.get("sides", "").startswith("two-sided")
+    user, account = split_user(row.get("job-originating-user-name"))
+    created = int(row["time-at-creation"]) if row.get("time-at-creation", "").isdigit() else None
+    finished = row.get("time-at-completed", "")
+    finished = int(finished) if finished.isdigit() and int(finished) > 0 else None
 
-        for line in lines[-70:]:
-            parts = line.split()
+    known = conn.execute("SELECT pages, created_at FROM jobs WHERE id = ?", (job_id,)).fetchone()
+    pages = known["pages"] if known and known["pages"] else get_page_count(job_id)
 
-            if len(parts) < 5:
-                continue
+    if known is None:
+        conn.execute("INSERT INTO jobs (id, review_on) VALUES (?, ?)", (job_id, int(review and not baseline)))
 
+    conn.execute("""
+        UPDATE jobs SET
+            user = COALESCE(NULLIF(?, ''), user),
+            account = COALESCE(NULLIF(?, ''), account),
+            printer = COALESCE(NULLIF(?, ''), printer),
+            name = COALESCE(NULLIF(?, ''), name),
+            pages = ?, copies = ?, duplex = ?, sheets = ?, state = ?,
+            created_at = COALESCE(?, created_at),
+            finished_at = COALESCE(?, finished_at)
+        WHERE id = ?
+    """, (user, account, public_name(row.get("job-printer-uri", "").rsplit("/", 1)[-1]), row.get("job-name", ""),
+          pages, copies, int(duplex), compute_sheets(pages, copies, duplex), state, created, finished, job_id))
+
+    # Con el modo revisión activo, nada debería imprimirse sin pasar por Autorizar
+    conn.execute("""
+        UPDATE jobs SET unauthorized = 1
+        WHERE id = ? AND review_on = 1 AND approved_at IS NULL AND denied_at IS NULL
+          AND state IN ('processing', 'processing-stopped', 'completed', 'aborted')
+    """, (job_id,))
+
+
+def sync_jobs():
+    """Copia a la base de datos el estado de los trabajos de CUPS."""
+    with closing(db()) as conn:
+        first_run = conn.execute("SELECT 1 FROM meta WHERE key = 'baseline_at'").fetchone() is None
+
+    review = get_review_printers()
+    review_on = bool(review) and all(review.values())
+    rows = run_ipptool("get-jobs.test", which="not-completed", limit=500)
+    rows += run_ipptool("get-jobs.test", which="completed", limit=500 if first_run else 50)
+
+    with closing(db()) as conn, conn:
+        for row in rows:
+            if row.get("job-id", "").isdigit():
+                record_job(conn, row, review_on, first_run)
+        if first_run:
+            conn.execute("INSERT INTO meta (key, value) VALUES ('baseline_at', ?)", (str(int(time.time())),))
+
+
+def purge_cache():
+    limit = time.time() - CACHE_MAX_AGE
+    for entry in os.scandir(CACHE_DIR):
+        if entry.is_file() and entry.stat().st_mtime < limit:
+            os.remove(entry.path)
+
+
+def collector_loop():
+    """Sincroniza trabajos en segundo plano. El candado deja activo a un solo worker."""
+    with open(DB_PATH + ".lock", "w") as lock:
+        while True:
             try:
-                printer = parts[0].replace('"', '')
-                user = parts[1].split("\\")[0]
-                job_id = parts[2]
-                date = parts[3] + " " + parts[4]
+                fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+                break
+            except OSError:
+                time.sleep(SYNC_SECONDS * 3)
 
-                jobs.append({
-                    "id": job_id,
-                    "user": user,
-                    "printer": printer,
-                    "date": date
-                })
+        last_purge = 0
+        while True:
+            try:
+                sync_jobs()
+                if time.time() - last_purge > 3600:
+                    purge_cache()
+                    last_purge = time.time()
             except Exception:
-                continue
+                print("ERROR collector:", flush=True)
+                print(traceback.format_exc(), flush=True)
+            time.sleep(SYNC_SECONDS)
 
-    except Exception:
-        print("ERROR get_history:")
-        print(traceback.format_exc())
 
-    return list(reversed(jobs))
+def start_collector():
+    threading.Thread(target=collector_loop, daemon=True).start()
+
+
+def record_decision(job_id, **fields):
+    """Registra una decisión del panel aunque el recolector aún no haya visto el trabajo."""
+    with closing(db()) as conn, conn:
+        conn.execute("INSERT OR IGNORE INTO jobs (id, created_at) VALUES (?, ?)", (int(job_id), int(time.time())))
+        for field, value in fields.items():
+            conn.execute(f"UPDATE jobs SET {field} = ? WHERE id = ?", (value, int(job_id)))
+
+
+def job_status(job):
+    if job["denied_at"]:
+        return "denied"
+    if job["state"] == "completed":
+        return "printed"
+    if job["state"] in ("canceled", "aborted"):
+        return "canceled" if job["state"] == "canceled" else "error"
+    return "active"
+
+
+def period_start(days):
+    today = time.localtime()
+    midnight = time.mktime((today.tm_year, today.tm_mon, today.tm_mday, 0, 0, 0, 0, 0, -1))
+    return int(midnight) - (days - 1) * 86400
+
+
+def get_report(days):
+    since = period_start(days)
+    with closing(db()) as conn:
+        totals = conn.execute("""
+            SELECT
+                COALESCE(SUM(CASE WHEN state = 'completed' AND denied_at IS NULL THEN sheets END), 0) AS sheets,
+                COUNT(CASE WHEN state = 'completed' AND denied_at IS NULL THEN 1 END) AS printed,
+                COUNT(CASE WHEN state = 'completed' AND denied_at IS NULL AND sheets IS NULL THEN 1 END) AS unknown,
+                COUNT(denied_at) AS denied,
+                COALESCE(SUM(CASE WHEN denied_at IS NOT NULL THEN sheets END), 0) AS saved
+            FROM jobs WHERE created_at >= ?
+        """, (since,)).fetchone()
+
+        by_day = {row["day"]: row["sheets"] for row in conn.execute("""
+            SELECT date(created_at, 'unixepoch', 'localtime') AS day, COALESCE(SUM(sheets), 0) AS sheets
+            FROM jobs WHERE created_at >= ? AND state = 'completed' AND denied_at IS NULL
+            GROUP BY day
+        """, (since,))}
+
+        users = conn.execute("""
+            SELECT user,
+                COUNT(CASE WHEN state = 'completed' AND denied_at IS NULL THEN 1 END) AS printed,
+                COALESCE(SUM(CASE WHEN state = 'completed' AND denied_at IS NULL THEN sheets END), 0) AS sheets,
+                COUNT(denied_at) AS denied,
+                MAX(created_at) AS last_at
+            FROM jobs WHERE created_at >= ? AND user != ''
+            GROUP BY user ORDER BY sheets DESC, printed DESC, user
+        """, (since,)).fetchall()
+
+    days_list = [time.strftime("%Y-%m-%d", time.localtime(since + i * 86400 + 7200)) for i in range(days)]
+    return {
+        "days": days,
+        "totals": dict(totals),
+        "by_day": [{"day": day, "sheets": by_day.get(day, 0)} for day in days_list],
+        "users": [dict(row) for row in users]
+    }
+
+
+def get_history(query="", status="", days=30, limit=200):
+    conditions = ["created_at >= ?"]
+    params = [period_start(days)]
+
+    if query:
+        conditions.append("(user LIKE ? OR account LIKE ? OR name LIKE ? OR CAST(id AS TEXT) = ?)")
+        params += [f"%{query}%", f"%{query}%", f"%{query}%", query]
+
+    filters = {
+        "printed": "state = 'completed' AND denied_at IS NULL",
+        "denied": "denied_at IS NOT NULL",
+        "canceled": "state = 'canceled' AND denied_at IS NULL",
+        "error": "state = 'aborted'",
+        "unauthorized": "unauthorized = 1"
+    }
+    if status in filters:
+        conditions.append(filters[status])
+    else:
+        conditions.append("state IN ('completed', 'canceled', 'aborted')")
+
+    sql = f"SELECT * FROM jobs WHERE {' AND '.join(conditions)} ORDER BY id DESC LIMIT ?"
+    with closing(db()) as conn:
+        rows = conn.execute(sql, params + [limit]).fetchall()
+
+    jobs = []
+    for row in rows:
+        job = dict(row)
+        job["status"] = job_status(row)
+        job["reprintable"] = os.path.exists(spool_file(row["id"]))
+        jobs.append(job)
+    return jobs
+
+
+def get_alert_count():
+    with closing(db()) as conn:
+        return conn.execute("SELECT COUNT(*) FROM jobs WHERE unauthorized = 1 AND acknowledged = 0").fetchone()[0]
 
 
 def get_status(active_jobs):
@@ -320,21 +550,25 @@ def login():
         return render_template("login.html", error=None, disabled=False)
 
     ip = request.remote_addr
-    fails, first_fail = LOGIN_FAILS.get(ip, (0, 0))
-    if time.time() - first_fail > LOGIN_LOCK_SECONDS:
-        fails = 0
+    now = int(time.time())
+
+    with closing(db()) as conn, conn:
+        conn.execute("DELETE FROM login_attempts WHERE at < ?", (now - LOGIN_LOCK_SECONDS,))
+        fails = conn.execute("SELECT COUNT(*) FROM login_attempts WHERE ip = ?", (ip,)).fetchone()[0]
 
     if fails >= MAX_LOGIN_FAILS:
         return render_template("login.html", error="Demasiados intentos. Espera unos minutos.", disabled=False), 429
 
     if check_password_hash(password_hash, request.form.get("password", "")):
-        LOGIN_FAILS.pop(ip, None)
+        with closing(db()) as conn, conn:
+            conn.execute("DELETE FROM login_attempts WHERE ip = ?", (ip,))
         session.clear()
         session.permanent = True
         session["auth"] = True
         return redirect("/")
 
-    LOGIN_FAILS[ip] = (fails + 1, first_fail if fails else time.time())
+    with closing(db()) as conn, conn:
+        conn.execute("INSERT INTO login_attempts (ip, at) VALUES (?, ?)", (ip, now))
     time.sleep(1)
     return render_template("login.html", error="Contraseña incorrecta.", disabled=False), 401
 
@@ -347,45 +581,63 @@ def logout():
 
 @app.route("/")
 def index():
-    try:
-        active = get_active_jobs()
-        history = get_history()
-        status_text, status_class = get_status(active)
-        review = get_review_printers()
-
-        return render_template(
-            "index.html",
-            active=active,
-            history=history,
-            status_text=status_text,
-            status_class=status_class,
-            review_mode=bool(review) and all(review.values())
-        )
-    except Exception:
-        print("ERROR index:")
-        print(traceback.format_exc())
-        return "Error interno", 500
+    return render_template("index.html")
 
 
 @app.route("/api/status")
 def api_status():
     try:
         active = get_active_jobs()
-        history = get_history()
         status_text, status_class = get_status(active)
         review = get_review_printers()
 
         return jsonify({
             "active": active,
-            "history": history,
             "status_text": status_text,
             "status_class": status_class,
-            "review_mode": bool(review) and all(review.values())
+            "review_mode": bool(review) and all(review.values()),
+            "alerts": get_alert_count()
         })
     except Exception:
         print("ERROR api_status:")
         print(traceback.format_exc())
         return jsonify({"error": "Error interno del servidor"}), 500
+
+
+def days_param(default=30):
+    value = request.args.get("days", "")
+    return min(int(value), 365) if value.isdigit() and int(value) > 0 else default
+
+
+@app.route("/api/history")
+def api_history():
+    try:
+        return jsonify({"jobs": get_history(
+            query=request.args.get("q", "").strip(),
+            status=request.args.get("status", ""),
+            days=days_param()
+        )})
+    except Exception:
+        print("ERROR api_history:")
+        print(traceback.format_exc())
+        return jsonify({"error": "Error interno del servidor"}), 500
+
+
+@app.route("/api/report")
+def api_report():
+    try:
+        return jsonify(get_report(days_param(14)))
+    except Exception:
+        print("ERROR api_report:")
+        print(traceback.format_exc())
+        return jsonify({"error": "Error interno del servidor"}), 500
+
+
+@app.route("/alerts/ack", methods=["POST"])
+def alerts_ack():
+    with closing(db()) as conn, conn:
+        conn.execute("UPDATE jobs SET acknowledged = 1 WHERE unauthorized = 1")
+    return ajax_or_redirect(True, "Avisos marcados como revisados.")
 
 
 @app.route("/cancel", methods=["POST"])
@@ -432,22 +684,28 @@ def reprint():
         message = ""
 
         if job_id and job_id.isdigit() and printer:
-            job_file = f"/var/spool/cups/d{int(job_id):05d}-001"
+            job_file = spool_file(job_id)
 
             if os.path.exists(job_file):
-                # Habilitar la cola en la impresora antes de enviar
-                subprocess.run(["cupsenable", printer], timeout=3)
-                subprocess.run(["cupsaccept", printer], timeout=3)
-                
+                # Una reimpresión ya está autorizada: va directo a la cola de salida si existe,
+                # nunca se reanuda la cola pública pausada
+                target = printer + OUTPUT_SUFFIX if printer + OUTPUT_SUFFIX in get_printers() else printer
+                subprocess.run(["cupsenable", target], timeout=3)
+                subprocess.run(["cupsaccept", target], timeout=3)
+
                 # Reimprimir el archivo spool con lp de forma inmediata
                 result = subprocess.run(
-                    ["lp", "-d", printer, "-H", "immediate", job_file],
+                    ["lp", "-d", target, "-H", "immediate", job_file],
                     capture_output=True,
                     text=True,
                     timeout=5
                 )
 
                 if result.returncode == 0:
+                    new_job = re.search(r"-(\d+)", result.stdout)
+                    if new_job:
+                        record_decision(new_job.group(1), approved_at=int(time.time()),
+                                        unauthorized=0, reprint_of=int(job_id))
                     LAST_ACTION = {
                         "type": "reprint",
                         "job": job_id,
@@ -520,6 +778,21 @@ def preview(job_id):
         abort(500)
 
 
+def release_job(job_id):
+    """Libera un trabajo y lo pasa a la cola de salida. Si falla, sigue sin imprimirse."""
+    queue = next((row.get("job-printer-uri", "").rsplit("/", 1)[-1]
+                  for row in run_ipptool("get-jobs.test", which="not-completed", limit=500)
+                  if row.get("job-id") == job_id), "")
+    output = queue + OUTPUT_SUFFIX
+
+    if output not in get_printers():
+        return subprocess.run(["lp", "-i", job_id, "-H", "resume"], capture_output=True, text=True, timeout=5)
+
+    # Un trabajo enviado con no-hold no está retenido y resume falla: lo que decide es el traslado
+    subprocess.run(["lp", "-i", job_id, "-H", "resume"], capture_output=True, text=True, timeout=5)
+    return subprocess.run(["lpmove", job_id, output], capture_output=True, text=True, timeout=5)
+
+
 @app.route("/approve", methods=["POST"])
 def approve():
     global LAST_ACTION
@@ -529,7 +802,11 @@ def approve():
         return ajax_or_redirect(False, "ID de trabajo no válido.")
 
     try:
-        result = subprocess.run(["lp", "-i", job_id, "-H", "resume"], capture_output=True, text=True, timeout=5)
+        # Se registra antes de liberar para que el recolector no lo marque como no autorizado
+        record_decision(job_id, approved_at=int(time.time()), unauthorized=0)
+        result = release_job(job_id)
+        if result.returncode != 0:
+            record_decision(job_id, approved_at=None)
         if result.returncode == 0:
             LAST_ACTION = {"type": "print", "job": job_id, "user": request.form.get("user"), "time": time.time()}
             return ajax_or_redirect(True, f"Trabajo {job_id} autorizado.")
@@ -549,6 +826,7 @@ def deny():
     try:
         result = subprocess.run(["cancel", job_id], capture_output=True, text=True, timeout=5)
         if result.returncode == 0:
+            record_decision(job_id, denied_at=int(time.time()))
             return ajax_or_redirect(True, f"Trabajo {job_id} denegado.")
         return ajax_or_redirect(False, f"No se pudo denegar el trabajo {job_id}: {result.stderr.strip()}")
     except Exception as e:
@@ -563,14 +841,20 @@ def review_mode():
     enabled = request.form.get("enabled") == "1"
     value = "indefinite" if enabled else "no-hold"
     errors = []
+    printers = get_printers()
 
-    for printer in get_review_printers():
-        result = subprocess.run(
-            ["lpadmin", "-p", printer, "-o", f"job-hold-until-default={value}"],
-            capture_output=True, text=True, timeout=5
-        )
-        if result.returncode != 0:
-            errors.append(f"{printer}: {result.stderr.strip()}")
+    for printer in printers:
+        if printer.endswith(OUTPUT_SUFFIX):
+            continue
+
+        commands = [["lpadmin", "-p", printer, "-o", f"job-hold-until-default={value}"]]
+        if printer + OUTPUT_SUFFIX in printers:
+            commands.append(["cupsdisable", printer] if enabled else ["cupsenable", printer])
+
+        for command in commands:
+            result = subprocess.run(command, capture_output=True, text=True, timeout=5)
+            if result.returncode != 0:
+                errors.append(f"{printer}: {result.stderr.strip()}")
 
     if errors:
         return ajax_or_redirect(False, "Error al cambiar el modo revisión: " + "; ".join(errors))

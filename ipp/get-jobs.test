@@ -1,14 +1,15 @@
-# Lista los trabajos pendientes (incluye retenidos) con sus atributos IPP.
-# Uso: ipptool -c ipp://localhost/ get-jobs.test
+# Lista trabajos con sus atributos IPP. Variables: which (not-completed|completed), limit.
+# Uso: ipptool -c -d which=not-completed -d limit=500 ipp://localhost/ get-jobs.test
 {
     OPERATION Get-Jobs
     GROUP operation-attributes-tag
     ATTR charset attributes-charset utf-8
     ATTR naturalLanguage attributes-natural-language en
     ATTR uri printer-uri $uri
-    ATTR keyword which-jobs not-completed
+    ATTR keyword which-jobs $which
+    ATTR integer limit $limit
     ATTR name requesting-user-name root
-    ATTR keyword requested-attributes job-id,job-printer-uri,job-state,copies,sides,job-name,job-originating-user-name,document-format
+    ATTR keyword requested-attributes job-id,job-printer-uri,job-state,copies,sides,job-name,job-originating-user-name,document-format,time-at-creation,time-at-completed
     DISPLAY job-id
     DISPLAY job-printer-uri
     DISPLAY job-state
@@ -17,4 +18,6 @@
     DISPLAY job-name
     DISPLAY job-originating-user-name
     DISPLAY document-format
+    DISPLAY time-at-creation
+    DISPLAY time-at-completed
 }

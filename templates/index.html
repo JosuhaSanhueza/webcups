@@ -3,13 +3,12 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Impresiones Lab2 - Panel de Control</title>
-    <!-- Google Fonts: Inter -->
+    <title>EscolarApp Print</title>
+    <link rel="icon" type="image/svg+xml" href="{{ url_for('static', filename='logo.svg') }}">
+    <link rel="alternate icon" href="{{ url_for('static', filename='favicon.ico') }}">
     <link rel="preconnect" href="https://fonts.googleapis.com">
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&display=swap" rel="stylesheet">
-    <!-- Icono -->
-    <link rel="icon" href="{{ url_for('static', filename='favicon.ico') }}">
+    <link href="https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:wght@400;500;600;700&display=swap" rel="stylesheet">
     <!-- Tema: aplicar antes de pintar para evitar parpadeo -->
     <script>
         (function () {
@@ -19,171 +18,184 @@
             document.documentElement.setAttribute('data-theme', saved || (light ? 'light' : 'dark'));
         })();
     </script>
-    <!-- Estilos -->
     <link rel="stylesheet" href="{{ url_for('static', filename='css/style.css') }}">
 </head>
 <body>
-    <div class="background-glow"></div>
-    
-    <div class="container">
-        <!-- Encabezado -->
-        <header class="app-header">
-            <div class="header-logo">
-                <svg xmlns="http://www.w3.org/2000/svg" width="34" height="34" viewBox="0 0 24 24" fill="none" stroke="url(#printer-gradient)" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" class="header-icon">
-                    <defs>
-                        <linearGradient id="printer-gradient" x1="0%" y1="0%" x2="100%" y2="100%">
-                            <stop offset="0%" stop-color="#38bdf8" />
-                            <stop offset="100%" stop-color="#818cf8" />
-                        </linearGradient>
-                    </defs>
-                    <path d="M6 18H4a2 2 0 0 1-2-2v-5a2 2 0 0 1 2-2h16a2 2 0 0 1 2 2v5a2 2 0 0 1-2 2h-2"/>
-                    <path d="M6 9V3a1 1 0 0 1 1-1h10a1 1 0 0 1 1 1v6"/>
-                    <rect x="6" y="14" width="12" height="8" rx="1"/>
-                </svg>
+    <svg xmlns="http://www.w3.org/2000/svg" style="display:none">
+        <symbol id="i-home" viewBox="0 0 24 24"><path d="M3 11l9-8 9 8"/><path d="M5 9.5V21h14V9.5"/></symbol>
+        <symbol id="i-queue" viewBox="0 0 24 24"><path d="M6 18H4a2 2 0 0 1-2-2v-5a2 2 0 0 1 2-2h16a2 2 0 0 1 2 2v5a2 2 0 0 1-2 2h-2"/><path d="M6 9V3h12v6"/><rect x="6" y="14" width="12" height="8" rx="1"/></symbol>
+        <symbol id="i-history" viewBox="0 0 24 24"><path d="M3 12a9 9 0 1 0 3-6.7L3 8"/><path d="M3 3v5h5"/><path d="M12 7v5l3 2"/></symbol>
+        <symbol id="i-users" viewBox="0 0 24 24"><rect x="3" y="4" width="18" height="12" rx="2"/><path d="M8 20h8M12 16v4"/></symbol>
+        <symbol id="i-moon" viewBox="0 0 24 24"><path d="M21 12.79A9 9 0 1 1 11.21 3 7 7 0 0 0 21 12.79z"/></symbol>
+        <symbol id="i-sun" viewBox="0 0 24 24"><circle cx="12" cy="12" r="4"/><path d="M12 2v2M12 20v2M4.93 4.93l1.41 1.41M17.66 17.66l1.41 1.41M2 12h2M20 12h2M4.93 19.07l1.41-1.41M17.66 6.34l1.41-1.41"/></symbol>
+        <symbol id="i-alert" viewBox="0 0 24 24"><path d="M12 3l10 18H2z"/><path d="M12 10v5M12 18h.01"/></symbol>
+    </svg>
+
+    <div class="app-shell">
+        <aside class="sidebar">
+            <div class="brand">
+                <img class="brand-logo" src="{{ url_for('static', filename='logo.svg') }}" alt="">
                 <div>
-                    <h1>Panel de Control</h1>
-                    <p class="subtitle">Administrador de Impresiones Lab2</p>
+                    <strong>EscolarApp <em>Print</em></strong>
+                    <span>Impresiones Lab2</span>
                 </div>
             </div>
-            <div class="header-actions">
-                <button class="theme-toggle" id="theme-toggle" title="Cambiar tema claro/oscuro" aria-label="Cambiar tema claro/oscuro">
-                    <svg class="icon-moon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 12.79A9 9 0 1 1 11.21 3 7 7 0 0 0 21 12.79z"/></svg>
-                    <svg class="icon-sun" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="4"/><path d="M12 2v2M12 20v2M4.93 4.93l1.41 1.41M17.66 17.66l1.41 1.41M2 12h2M20 12h2M4.93 19.07l1.41-1.41M17.66 6.34l1.41-1.41"/></svg>
-                </button>
-                <label class="review-toggle" title="Retener cada impresión hasta que sea autorizada">
-                    <input type="checkbox" id="review-mode-toggle" {% if review_mode %}checked{% endif %}>
-                    <span class="toggle-track"><span class="toggle-thumb"></span></span>
-                    <span>Modo revisión</span>
-                </label>
-                <form method="post" action="/logout">
-                    <button type="submit" class="btn btn-secondary btn-sm">Salir</button>
-                </form>
+            <nav class="nav" aria-label="Secciones">
+                <a href="#resumen" class="nav-link" data-view="resumen"><svg class="icon"><use href="#i-home"/></svg>Resumen</a>
+                <a href="#cola" class="nav-link" data-view="cola"><svg class="icon"><use href="#i-queue"/></svg>Cola<span class="nav-count" id="nav-pending" hidden></span></a>
+                <a href="#historial" class="nav-link" data-view="historial"><svg class="icon"><use href="#i-history"/></svg>Historial</a>
+                <a href="#equipos" class="nav-link" data-view="equipos"><svg class="icon"><use href="#i-users"/></svg>Equipos</a>
+            </nav>
+        </aside>
+
+        <div class="main">
+            <header class="topbar">
+                <div>
+                    <h1 id="view-title">Resumen</h1>
+                    <p class="status-indicator" id="printer-status-text" role="status">Cargando...</p>
+                </div>
+                <div class="header-actions">
+                    <label class="review-toggle" title="Retener cada impresión hasta que sea autorizada">
+                        <input type="checkbox" id="review-mode-toggle">
+                        <span class="toggle-track"><span class="toggle-thumb"></span></span>
+                        <span>Modo revisión</span>
+                    </label>
+                    <button class="theme-toggle" id="theme-toggle" title="Cambiar tema claro/oscuro" aria-label="Cambiar tema claro/oscuro">
+                        <svg class="icon icon-moon"><use href="#i-moon"/></svg>
+                        <svg class="icon icon-sun"><use href="#i-sun"/></svg>
+                    </button>
+                    <form method="post" action="/logout">
+                        <button type="submit" class="btn btn-secondary btn-sm">Salir</button>
+                    </form>
+                </div>
+            </header>
+
+            <div class="alert-banner" id="alert-banner" role="alert" hidden>
+                <svg class="icon"><use href="#i-alert"/></svg>
+                <span id="alert-text"></span>
+                <a href="#historial" id="alert-view" class="btn btn-secondary btn-sm">Ver</a>
+                <button class="btn btn-secondary btn-sm" id="alert-ack">Marcar como revisado</button>
             </div>
-        </header>
 
-        <!-- Tarjetas de Resumen -->
-        <section class="cards-grid">
-            <div class="card glass-card">
-                <div class="card-icon">⏳</div>
-                <div class="card-content">
-                    <h3>Trabajos Activos</h3>
-                    <p class="counter" id="count-active">{{ active|length }}</p>
-                </div>
-            </div>
+            <main class="content">
+                <!-- Resumen -->
+                <section class="view" data-view="resumen">
+                    <div class="toolbar">
+                        <h2>Actividad</h2>
+                        <label class="field-inline">Período
+                            <select id="report-days" class="input">
+                                <option value="7">7 días</option>
+                                <option value="14" selected>14 días</option>
+                                <option value="30">30 días</option>
+                                <option value="90">90 días</option>
+                            </select>
+                        </label>
+                    </div>
+                    <div class="stats">
+                        <a class="stat glass-card stat-link" href="#cola"><span>Por autorizar</span><strong id="stat-pending">0</strong></a>
+                        <div class="stat glass-card"><span>Hojas impresas</span><strong id="stat-sheets">0</strong></div>
+                        <div class="stat glass-card"><span>Trabajos impresos</span><strong id="stat-printed">0</strong></div>
+                        <div class="stat glass-card"><span>Hojas evitadas</span><strong id="stat-saved">0</strong></div>
+                    </div>
+                    <p class="note" id="report-note" hidden></p>
+                    <div class="report-grid">
+                        <div class="panel glass-card">
+                            <h3>Hojas impresas por día</h3>
+                            <div class="chart" id="chart-days"></div>
+                            <details class="chart-table">
+                                <summary>Ver tabla</summary>
+                                <div class="table-wrapper"><table><thead><tr><th>Día</th><th class="text-right">Hojas</th></tr></thead><tbody id="chart-table-body"></tbody></table></div>
+                            </details>
+                        </div>
+                        <div class="panel glass-card">
+                            <h3>Equipos con más hojas</h3>
+                            <div id="top-users"></div>
+                        </div>
+                    </div>
+                </section>
 
-            <div class="card glass-card">
-                <div class="card-icon">📜</div>
-                <div class="card-content">
-                    <h3>Historial Reciente</h3>
-                    <p class="counter" id="count-history">{{ history|length }}</p>
-                </div>
-            </div>
+                <!-- Cola -->
+                <section class="view" data-view="cola" hidden>
+                    <div class="panel glass-card">
+                        <div class="toolbar"><h2>Trabajos en cola</h2><span class="badge" id="active-badge">0 en cola</span></div>
+                        <div class="table-wrapper">
+                            <table>
+                                <thead><tr><th>Vista previa</th><th>Job ID</th><th>Equipo / Usuario</th><th>Impresora</th><th>Hojas</th><th class="text-right">Acción</th></tr></thead>
+                                <tbody id="active-jobs-tbody"><tr class="empty-row"><td colspan="6">Cargando trabajos...</td></tr></tbody>
+                            </table>
+                        </div>
+                    </div>
+                </section>
 
-            <div class="card glass-card">
-                <div class="card-icon">⚡</div>
-                <div class="card-content">
-                    <h3>Estado Impresora</h3>
-                    <p class="status-indicator {{ status_class }}" id="printer-status-text">{{ status_text }}</p>
-                </div>
-            </div>
-        </section>
+                <!-- Historial -->
+                <section class="view" data-view="historial" hidden>
+                    <div class="panel glass-card">
+                        <div class="toolbar">
+                            <h2>Historial</h2>
+                            <div class="filters">
+                                <input type="search" id="history-q" class="input" placeholder="Buscar equipo, documento o ID" aria-label="Buscar en el historial">
+                                <select id="history-status" class="input" aria-label="Filtrar por estado">
+                                    <option value="">Todos los estados</option>
+                                    <option value="printed">Impreso</option>
+                                    <option value="denied">Denegado</option>
+                                    <option value="canceled">Cancelado</option>
+                                    <option value="error">Error</option>
+                                    <option value="unauthorized">Sin autorizar</option>
+                                </select>
+                                <select id="history-days" class="input" aria-label="Período">
+                                    <option value="7">7 días</option>
+                                    <option value="30" selected>30 días</option>
+                                    <option value="90">90 días</option>
+                                    <option value="365">1 año</option>
+                                </select>
+                            </div>
+                        </div>
+                        <div class="table-wrapper">
+                            <table>
+                                <thead><tr><th>Job ID</th><th>Fecha</th><th>Equipo / Usuario</th><th>Documento</th><th>Hojas</th><th>Estado</th><th class="text-right">Acción</th></tr></thead>
+                                <tbody id="history-tbody"></tbody>
+                            </table>
+                        </div>
+                    </div>
+                </section>
 
-        <!-- Contenido Principal -->
-        <main class="dashboard-main">
-            <!-- Sección Trabajos Activos -->
-            <section class="table-section glass-card">
-                <div class="table-header">
-                    <h2>🟢 Trabajos Activos</h2>
-                    <span class="badge" id="active-badge">{{ active|length }} en cola</span>
-                </div>
-                <div class="table-wrapper">
-                    <table id="active-jobs-table">
-                        <thead>
-                            <tr>
-                                <th>Vista previa</th>
-                                <th>Job ID</th>
-                                <th>Equipo / Usuario</th>
-                                <th>Impresora</th>
-                                <th>Hojas</th>
-                                <th class="text-right">Acción</th>
-                            </tr>
-                        </thead>
-                        <tbody id="active-jobs-tbody">
-                            <tr class="empty-row">
-                                <td colspan="6">Cargando trabajos...</td>
-                            </tr>
-                        </tbody>
-                    </table>
-                </div>
-            </section>
-
-            <!-- Sección Historial -->
-            <section class="table-section glass-card">
-                <div class="table-header">
-                    <h2>📜 Historial de Impresión</h2>
-                    <span class="badge" id="history-badge">Últimos {{ history|length }}</span>
-                </div>
-                <div class="table-wrapper">
-                    <table id="history-jobs-table">
-                        <thead>
-                            <tr>
-                                <th>Job ID</th>
-                                <th>Equipo / Usuario</th>
-                                <th>Impresora</th>
-                                <th>Fecha / Hora</th>
-                                <th class="text-right">Acción</th>
-                            </tr>
-                        </thead>
-                        <tbody id="history-jobs-tbody">
-                            {% if history %}
-                                {% for job in history %}
-                                <tr data-job-id="{{ job.id }}">
-                                    <td class="font-mono">{{ job.id }}</td>
-                                    <td>
-                                        <div class="user-cell">
-                                            <span class="avatar">👤</span>
-                                            <span>{{ job.user }}</span>
-                                        </div>
-                                    </td>
-                                    <td><span class="printer-tag">{{ job.printer }}</span></td>
-                                    <td class="text-muted">{{ job.date }}</td>
-                                    <td class="text-right">
-                                        <button class="btn btn-primary btn-sm action-reprint" 
-                                                data-job-id="{{ job.id }}" 
-                                                data-printer="{{ job.printer }}"
-                                                data-user="{{ job.user }}">
-                                            Reimprimir
-                                        </button>
-                                    </td>
-                                </tr>
-                                {% endfor %}
-                            {% else %}
-                                <tr class="empty-row">
-                                    <td colspan="5">El historial de impresión está vacío.</td>
-                                </tr>
-                            {% endif %}
-                        </tbody>
-                    </table>
-                </div>
-            </section>
-        </main>
-
-        <!-- Pie de página -->
-        <footer class="app-footer">
-            <p>WebCUPS &copy; 2026 | Desarrollado para Proxmox & CUPS Server</p>
-        </footer>
+                <!-- Equipos -->
+                <section class="view" data-view="equipos" hidden>
+                    <div class="panel glass-card">
+                        <div class="toolbar">
+                            <h2>Uso por equipo</h2>
+                            <label class="field-inline">Período
+                                <select id="users-days" class="input">
+                                    <option value="7">7 días</option>
+                                    <option value="30" selected>30 días</option>
+                                    <option value="90">90 días</option>
+                                    <option value="365">1 año</option>
+                                </select>
+                            </label>
+                        </div>
+                        <div class="table-wrapper">
+                            <table>
+                                <thead><tr><th>Equipo</th><th class="text-right">Hojas</th><th class="text-right">Impresos</th><th class="text-right">Denegados</th><th>Último trabajo</th></tr></thead>
+                                <tbody id="users-tbody"></tbody>
+                            </table>
+                        </div>
+                    </div>
+                </section>
+            </main>
+        </div>
     </div>
+
+    <div class="chart-tooltip" id="chart-tooltip" hidden></div>
+    <div class="toast" id="toast" role="status" hidden></div>
 
     <!-- Modal de Confirmación -->
     <div id="confirm-modal" class="modal-overlay">
         <div class="modal glass-card animate-zoom">
             <div class="modal-header">
                 <h3 id="modal-title">¿Confirmar Acción?</h3>
-                <button class="modal-close" id="modal-close-btn">&times;</button>
+                <button class="modal-close" id="modal-close-btn" aria-label="Cerrar">&times;</button>
             </div>
-            <div class="modal-body">
-                <p id="modal-message">¿Estás seguro de que deseas realizar esta acción?</p>
-            </div>
+            <div class="modal-body"><p id="modal-message"></p></div>
             <div class="modal-footer">
                 <button class="btn btn-secondary" id="modal-btn-cancel">Cancelar</button>
                 <button class="btn btn-primary" id="modal-btn-confirm">Confirmar</button>
@@ -196,11 +208,9 @@
         <div class="modal modal-preview glass-card animate-zoom">
             <div class="modal-header">
                 <h3 id="preview-title">Vista previa</h3>
-                <button class="modal-close" id="preview-close-btn">&times;</button>
+                <button class="modal-close" id="preview-close-btn" aria-label="Cerrar">&times;</button>
             </div>
-            <div class="modal-body preview-body">
-                <img id="preview-image" alt="Vista previa del documento">
-            </div>
+            <div class="modal-body preview-body"><img id="preview-image" alt="Vista previa del documento"></div>
             <div class="modal-footer preview-footer">
                 <button class="btn btn-secondary btn-sm" id="preview-prev">&larr; Anterior</button>
                 <span class="text-muted" id="preview-page">Página 1</span>
@@ -209,7 +219,6 @@
         </div>
     </div>
 
-    <!-- Scripts -->
     <script src="{{ url_for('static', filename='js/app.js') }}"></script>
 </body>
 </html>

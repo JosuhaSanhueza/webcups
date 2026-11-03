@@ -1,317 +1,459 @@
 document.addEventListener('DOMContentLoaded', () => {
-    // Referencias al DOM
-    const countActive = document.getElementById('count-active');
-    const countHistory = document.getElementById('count-history');
-    const activeBadge = document.getElementById('active-badge');
-    const historyBadge = document.getElementById('history-badge');
-    const printerStatus = document.getElementById('printer-status-text');
-    const activeTbody = document.getElementById('active-jobs-tbody');
-    const historyTbody = document.getElementById('history-jobs-tbody');
-    
-    // Modal
-    const confirmModal = document.getElementById('confirm-modal');
-    const modalTitle = document.getElementById('modal-title');
-    const modalMessage = document.getElementById('modal-message');
-    const modalCloseBtn = document.getElementById('modal-close-btn');
-    const modalBtnCancel = document.getElementById('modal-btn-cancel');
-    const modalBtnConfirm = document.getElementById('modal-btn-confirm');
+    const $ = (id) => document.getElementById(id);
+    const VIEW_TITLES = { resumen: 'Resumen', cola: 'Cola', historial: 'Historial', equipos: 'Equipos' };
+    const STATUS_LABELS = {
+        printed: ['Impreso', 'ok'], denied: ['Denegado', 'bad'], canceled: ['Cancelado', 'muted'],
+        error: ['Error', 'bad'], active: ['En proceso', 'warn']
+    };
+    const NUM = new Intl.NumberFormat('es-CL');
 
-    // Vista previa
-    const previewModal = document.getElementById('preview-modal');
-    const previewTitle = document.getElementById('preview-title');
-    const previewImage = document.getElementById('preview-image');
-    const previewPage = document.getElementById('preview-page');
-    const previewPrev = document.getElementById('preview-prev');
-    const previewNext = document.getElementById('preview-next');
-    const previewCloseBtn = document.getElementById('preview-close-btn');
-    const reviewToggle = document.getElementById('review-mode-toggle');
+    const reviewToggle = $('review-mode-toggle');
+    let currentView = 'resumen';
+    let currentActive = null;
+    let modalResolver = null;
     let previewJob = null;
     let previewCurrentPage = 1;
-    
-    // Estado interno para evitar repintados innecesarios
-    let currentActiveJobs = [];
-    let currentHistoryJobs = [];
-    let modalResolver = null;
+    let lastReport = null;
+    let searchTimer = null;
 
-    // Iniciar polling silencioso rápido cada 3 segundos
-    setInterval(fetchStatus, 3000);
-    // Primera carga inmediata
-    fetchStatus();
+    // --- NAVEGACIÓN ---
 
-    // Configuración de eventos de tabla dinámica
-    setupTableListeners();
-
-    // --- FUNCIONES DEL DASHBOARD ---
-
-    // Actualiza la interfaz gráfica con nuevos datos
-    function updateUI(data) {
-        // Actualizar contadores
-        countActive.textContent = data.active.length;
-        countHistory.textContent = data.history.length;
-        activeBadge.textContent = `${data.active.length} en cola`;
-        historyBadge.textContent = `Últimos ${data.history.length}`;
-        
-        // Actualizar estado de la impresora
-        printerStatus.textContent = data.status_text;
-        printerStatus.className = `status-indicator ${data.status_class}`;
-
-        // Estado del modo revisión
-        reviewToggle.checked = data.review_mode;
-
-        // Actualizar tabla de activos (si hay cambios)
-        if (hasJobsChanged(currentActiveJobs, data.active)) {
-            currentActiveJobs = data.active;
-            renderActiveJobs(data.active);
-        }
-
-        // Actualizar tabla de historial (si hay cambios)
-        if (hasJobsChanged(currentHistoryJobs, data.history)) {
-            currentHistoryJobs = data.history;
-            renderHistoryJobs(data.history);
-        }
+    function showView() {
+        const name = location.hash.slice(1);
+        currentView = VIEW_TITLES[name] ? name : 'resumen';
+        document.querySelectorAll('.view').forEach(v => { v.hidden = v.dataset.view !== currentView; });
+        document.querySelectorAll('.nav-link').forEach(link => {
+            const active = link.dataset.view === currentView;
+            link.classList.toggle('active', active);
+            if (active) link.setAttribute('aria-current', 'page'); else link.removeAttribute('aria-current');
+        });
+        $('view-title').textContent = VIEW_TITLES[currentView];
+        refreshView();
     }
 
-    // Consulta el estado del servidor de manera asíncrona
+    function refreshView() {
+        if (currentView === 'resumen') fetchReport();
+        if (currentView === 'historial') fetchHistory();
+        if (currentView === 'equipos') fetchUsers();
+    }
+
+    async function getJson(url) {
+        const response = await fetch(url);
+        if (response.status === 401) { window.location.href = '/login'; throw new Error('auth'); }
+        if (!response.ok) throw new Error(`Error ${response.status} en ${url}`);
+        return response.json();
+    }
+
+    // --- ESTADO Y COLA ---
+
     async function fetchStatus() {
         try {
-            const response = await fetch('/api/status');
-            if (response.status === 401) { window.location.href = '/login'; return; }
-            if (!response.ok) throw new Error('Error de red al consultar API');
-            const data = await response.json();
-            updateUI(data);
+            const data = await getJson('/api/status');
+            const held = data.active.filter(job => job.held).length;
+
+            $('printer-status-text').textContent = data.status_text;
+            $('printer-status-text').className = `status-indicator ${data.status_class}`;
+            reviewToggle.checked = data.review_mode;
+            $('stat-pending').textContent = NUM.format(held);
+            $('active-badge').textContent = `${data.active.length} en cola`;
+            $('nav-pending').textContent = held;
+            $('nav-pending').hidden = held === 0;
+            renderAlerts(data.alerts);
+
+            const serialized = JSON.stringify(data.active);
+            if (serialized !== currentActive) {
+                currentActive = serialized;
+                renderActiveJobs(data.active);
+            }
         } catch (error) {
-            console.error('Error actualizando dashboard:', error);
+            console.error('Error actualizando el panel:', error);
         }
     }
 
-    // Compara si dos arreglos de trabajos de impresión son distintos
-    function hasJobsChanged(oldJobs, newJobs) {
-        return JSON.stringify(oldJobs) !== JSON.stringify(newJobs);
+    function renderAlerts(count) {
+        $('alert-banner').hidden = !count;
+        $('alert-text').textContent = count === 1
+            ? '1 trabajo se imprimió sin pasar por Autorizar.'
+            : `${count} trabajos se imprimieron sin pasar por Autorizar.`;
     }
 
     function renderActiveJobs(jobs) {
+        const tbody = $('active-jobs-tbody');
         if (jobs.length === 0) {
-            activeTbody.innerHTML = `
-                <tr class="empty-row">
-                    <td colspan="6">No hay trabajos activos en este momento.</td>
-                </tr>
-            `;
+            tbody.innerHTML = '<tr class="empty-row"><td colspan="6">No hay trabajos en la cola.</td></tr>';
             return;
         }
 
-        activeTbody.innerHTML = jobs.map(job => `
-            <tr data-job-id="${job.id}" class="${job.held ? 'row-held' : ''}">
-                <td>${renderThumb(job)}</td>
-                <td class="font-mono text-cyan">${job.id}</td>
-                <td>
-                    <div class="user-cell">
-                        <span class="avatar">👤</span>
-                        <div>
-                            <div>${escapeHtml(job.user)}</div>
-                            ${job.name ? `<div class="job-name" title="${escapeHtml(job.name)}">${escapeHtml(job.name)}</div>` : ''}
-                        </div>
-                    </div>
-                </td>
+        tbody.innerHTML = jobs.map(job => `
+            <tr class="${job.held ? 'row-held' : ''}">
+                <td>${renderThumb(job.id, job.preview, job.pages, job.name)}</td>
+                <td class="font-mono">${escapeHtml(job.id)}</td>
+                <td>${renderUser(job.user, job.account, job.name)}</td>
                 <td><span class="printer-tag">${escapeHtml(job.printer)}</span></td>
                 <td>${renderSheets(job)}</td>
                 <td class="text-right">
                     ${job.held ? `
                         <div class="action-group">
-                            <button class="btn btn-success btn-sm action-approve" data-job-id="${job.id}" data-user="${escapeHtml(job.user)}">
-                                Autorizar
-                            </button>
-                            <button class="btn btn-danger btn-sm action-deny" data-job-id="${job.id}" data-user="${escapeHtml(job.user)}">
-                                Denegar
-                            </button>
+                            <button class="btn btn-success btn-sm action-approve" data-job-id="${escapeHtml(job.id)}" data-user="${escapeHtml(job.user)}">Autorizar</button>
+                            <button class="btn btn-danger btn-sm action-deny" data-job-id="${escapeHtml(job.id)}" data-user="${escapeHtml(job.user)}">Denegar</button>
                         </div>
-                    ` : `
-                        <button class="btn btn-danger btn-sm action-cancel" data-job-id="${job.id}">
-                            Cancelar
-                        </button>
-                    `}
+                    ` : `<button class="btn btn-danger btn-sm action-cancel" data-job-id="${escapeHtml(job.id)}">Cancelar</button>`}
                 </td>
             </tr>
         `).join('');
     }
 
-    function renderThumb(job) {
-        if (!job.preview) {
-            return `<div class="thumb thumb-empty" title="Formato sin vista previa">📄</div>`;
-        }
+    function renderUser(user, account, name) {
+        const who = account ? `${escapeHtml(user)} <span class="text-muted">· ${escapeHtml(account)}</span>` : escapeHtml(user || '—');
+        const doc = name ? `<div class="job-name" title="${escapeHtml(name)}">${escapeHtml(name)}</div>` : '';
+        return `<div>${who}</div>${doc}`;
+    }
+
+    function renderThumb(id, available, pages, name) {
+        if (!available) return '<div class="thumb thumb-empty" title="Sin vista previa"></div>';
         return `
-            <button class="thumb action-preview" data-job-id="${job.id}" data-pages="${job.pages || 1}"
-                    data-name="${escapeHtml(job.name || '')}" title="Ver documento">
-                <img src="/preview/${job.id}.png" alt="Página 1 del trabajo ${job.id}" loading="lazy">
-            </button>
-        `;
+            <button class="thumb action-preview" data-job-id="${escapeHtml(id)}" data-pages="${escapeHtml(pages || 1)}"
+                    data-name="${escapeHtml(name || '')}" title="Ver documento">
+                <img src="/preview/${encodeURIComponent(id)}.png" alt="Página 1 del trabajo ${escapeHtml(id)}" loading="lazy">
+            </button>`;
     }
 
     function renderSheets(job) {
-        if (!job.sheets) {
-            return `<span class="text-muted">—</span>`;
-        }
+        if (!job.sheets) return '<span class="text-muted">—</span>';
         const details = [`${job.pages} pág.`];
         if (job.copies > 1) details.push(`${job.copies} copias`);
         if (job.duplex) details.push('doble cara');
-        return `
-            <div class="sheets-count">${job.sheets}</div>
-            <div class="sheets-detail">${details.join(' · ')}</div>
-        `;
+        return `<div class="sheets-count">${NUM.format(job.sheets)}</div><div class="sheets-detail">${details.join(' · ')}</div>`;
     }
 
-    function renderHistoryJobs(jobs) {
-        if (jobs.length === 0) {
-            historyTbody.innerHTML = `
-                <tr class="empty-row">
-                    <td colspan="5">El historial de impresión está vacío.</td>
-                </tr>
-            `;
+    // --- RESUMEN ---
+
+    async function fetchReport() {
+        try {
+            lastReport = await getJson(`/api/report?days=${$('report-days').value}`);
+            const { totals, by_day: byDay, users } = lastReport;
+            $('stat-sheets').textContent = NUM.format(totals.sheets);
+            $('stat-printed').textContent = NUM.format(totals.printed);
+            $('stat-saved').textContent = NUM.format(totals.saved);
+
+            $('report-note').hidden = !totals.unknown;
+            $('report-note').textContent = totals.unknown
+                ? `${NUM.format(totals.unknown)} trabajos impresos no tienen hojas registradas (anteriores al registro o sin vista previa) y no suman en las hojas.`
+                : '';
+
+            drawDayChart(byDay);
+            $('chart-table-body').innerHTML = byDay.map(row =>
+                `<tr><td>${escapeHtml(formatDay(row.day))}</td><td class="text-right">${NUM.format(row.sheets)}</td></tr>`).join('');
+            renderTopUsers(users.filter(user => user.sheets > 0).slice(0, 5));
+        } catch (error) {
+            console.error('Error cargando el resumen:', error);
+        }
+    }
+
+    function formatDay(day) {
+        const [y, m, d] = day.split('-').map(Number);
+        return new Date(y, m - 1, d).toLocaleDateString('es-CL', { day: 'numeric', month: 'short' });
+    }
+
+    function niceMax(value) {
+        if (value <= 4) return 4;
+        const power = 10 ** Math.floor(Math.log10(value));
+        const step = [1, 2, 2.5, 5, 10].map(f => f * power).find(f => f * 4 >= value);
+        return step * 4;
+    }
+
+    function svgEl(tag, attrs) {
+        const el = document.createElementNS('http://www.w3.org/2000/svg', tag);
+        for (const key in attrs) el.setAttribute(key, attrs[key]);
+        return el;
+    }
+
+    function drawDayChart(rows) {
+        const box = $('chart-days');
+        box.textContent = '';
+        const total = rows.reduce((sum, row) => sum + row.sheets, 0);
+        if (!total) {
+            const empty = document.createElement('p');
+            empty.className = 'chart-empty';
+            empty.textContent = 'Sin hojas registradas en este período.';
+            box.appendChild(empty);
             return;
         }
 
-        historyTbody.innerHTML = jobs.map(job => `
-            <tr data-job-id="${job.id}">
-                <td class="font-mono">${job.id}</td>
-                <td>
-                    <div class="user-cell">
-                        <span class="avatar">👤</span>
-                        <span>${escapeHtml(job.user)}</span>
-                    </div>
-                </td>
-                <td><span class="printer-tag">${escapeHtml(job.printer)}</span></td>
-                <td class="text-muted">${escapeHtml(job.date)}</td>
-                <td class="text-right">
-                    <button class="btn btn-primary btn-sm action-reprint" 
-                            data-job-id="${job.id}" 
-                            data-printer="${escapeHtml(job.printer)}"
-                            data-user="${escapeHtml(job.user)}">
-                        Reimprimir
-                    </button>
-                </td>
-            </tr>
-        `).join('');
-    }
+        const width = Math.max(box.clientWidth, 280);
+        const height = 220;
+        const margin = { top: 12, right: 4, bottom: 24, left: 36 };
+        const plotW = width - margin.left - margin.right;
+        const plotH = height - margin.top - margin.bottom;
+        const max = niceMax(Math.max(...rows.map(row => row.sheets)));
+        const band = plotW / rows.length;
+        const barW = Math.max(Math.min(24, band - 2), 2);
+        const svg = svgEl('svg', { width, height, viewBox: `0 0 ${width} ${height}`, role: 'img',
+            'aria-label': `Hojas impresas por día, total ${total}` });
 
-    function setupTableListeners() {
-        document.body.addEventListener('click', async (e) => {
-            // Vista previa
-            const thumb = e.target.closest('.action-preview');
-            if (thumb) {
-                openPreview(thumb.getAttribute('data-job-id'), Number(thumb.getAttribute('data-pages')), thumb.getAttribute('data-name'));
-                return;
-            }
+        for (let i = 0; i <= 4; i++) {
+            const y = margin.top + plotH - (plotH * i) / 4;
+            svg.appendChild(svgEl('line', { x1: margin.left, x2: width - margin.right, y1: y, y2: y, class: 'chart-grid' }));
+            const label = svgEl('text', { x: margin.left - 8, y: y + 4, 'text-anchor': 'end', class: 'chart-axis' });
+            label.textContent = NUM.format((max * i) / 4);
+            svg.appendChild(label);
+        }
 
-            // Autorizar
-            if (e.target.classList.contains('action-approve')) {
-                performAction('/approve', {
-                    job_id: e.target.getAttribute('data-job-id'),
-                    user: e.target.getAttribute('data-user')
-                });
+        const labelEvery = Math.ceil(rows.length / Math.max(Math.floor(plotW / 56), 1));
+        rows.forEach((row, i) => {
+            const x = margin.left + band * i + (band - barW) / 2;
+            const barH = (row.sheets / max) * plotH;
+            const baseY = margin.top + plotH;
+
+            if (row.sheets > 0) {
+                const r = Math.min(4, barH, barW / 2);
+                svg.appendChild(svgEl('path', { class: 'chart-bar', d:
+                    `M${x},${baseY}V${baseY - barH + r}Q${x},${baseY - barH} ${x + r},${baseY - barH}` +
+                    `H${x + barW - r}Q${x + barW},${baseY - barH} ${x + barW},${baseY - barH + r}V${baseY}Z` }));
             }
 
-            // Denegar
-            if (e.target.classList.contains('action-deny')) {
-                const jobId = e.target.getAttribute('data-job-id');
-                const user = e.target.getAttribute('data-user');
-                const confirmed = await showConfirmModal(
-                    'Denegar Impresión',
-                    `¿Deseas denegar y eliminar el trabajo #${jobId} (Usuario: ${user})? No se imprimirá.`
-                );
-                if (confirmed) {
-                    performAction('/deny', { job_id: jobId });
-                }
+            if ((rows.length - 1 - i) % labelEvery === 0) {
+                const label = svgEl('text', { x: x + barW / 2, y: height - 6, 'text-anchor': 'middle', class: 'chart-axis' });
+                label.textContent = formatDay(row.day);
+                svg.appendChild(label);
             }
 
-            // Cancelar
-            if (e.target.classList.contains('action-cancel')) {
-                const jobId = e.target.getAttribute('data-job-id');
-                const confirmed = await showConfirmModal(
-                    'Cancelar Impresión',
-                    `¿Estás seguro de que deseas cancelar el trabajo #${jobId}?`
-                );
-                if (confirmed) {
-                    performAction('/cancel', { job_id: jobId });
-                }
-            }
-            
-            // Reimprimir
-            if (e.target.classList.contains('action-reprint')) {
-                const jobId = e.target.getAttribute('data-job-id');
-                const printer = e.target.getAttribute('data-printer');
-                const user = e.target.getAttribute('data-user');
-                const confirmed = await showConfirmModal(
-                    'Reimprimir Documento',
-                    `¿Deseas enviar a reimprimir el trabajo #${jobId} (Usuario: ${user}) en la impresora "${printer}"?`
-                );
-                if (confirmed) {
-                    performAction('/reprint', { job_id: jobId, printer, user });
-                }
-            }
+            // Zona de interacción más grande que la barra
+            const hit = svgEl('rect', { x: margin.left + band * i, y: margin.top, width: band, height: plotH,
+                class: 'chart-hit', tabindex: 0, role: 'img', 'aria-label': `${formatDay(row.day)}: ${row.sheets} hojas` });
+            const show = (event) => showTooltip(event, hit, row);
+            hit.addEventListener('pointermove', show);
+            hit.addEventListener('focus', show);
+            hit.addEventListener('pointerleave', hideTooltip);
+            hit.addEventListener('blur', hideTooltip);
+            svg.appendChild(hit);
         });
+        box.appendChild(svg);
     }
 
-    // Realiza peticiones POST asíncronas en segundo plano
-    async function performAction(url, bodyData) {
+    function showTooltip(event, hit, row) {
+        const tooltip = $('chart-tooltip');
+        tooltip.textContent = '';
+        const value = document.createElement('strong');
+        value.textContent = `${NUM.format(row.sheets)} ${row.sheets === 1 ? 'hoja' : 'hojas'}`;
+        const day = document.createElement('span');
+        day.textContent = formatDay(row.day);
+        tooltip.append(value, day);
+        tooltip.hidden = false;
+
+        const rect = hit.getBoundingClientRect();
+        const x = event.clientX || rect.left + rect.width / 2;
+        const y = event.clientY || rect.top + rect.height / 2;
+        const maxX = window.innerWidth - tooltip.offsetWidth - 8;
+        tooltip.style.left = `${Math.max(8, Math.min(x + 12, maxX))}px`;
+        tooltip.style.top = `${Math.max(8, y - tooltip.offsetHeight - 10)}px`;
+    }
+
+    function hideTooltip() {
+        $('chart-tooltip').hidden = true;
+    }
+
+    function renderTopUsers(users) {
+        const box = $('top-users');
+        if (users.length === 0) {
+            box.innerHTML = '<p class="chart-empty">Sin datos en este período.</p>';
+            return;
+        }
+        const max = users[0].sheets;
+        box.innerHTML = users.map(user => `
+            <div class="bar-row">
+                <div class="bar-label"><span>${escapeHtml(user.user)}</span><strong>${NUM.format(user.sheets)}</strong></div>
+                <div class="bar-track"><div class="bar-fill" style="width:${Math.max((user.sheets / max) * 100, 2)}%"></div></div>
+            </div>`).join('');
+    }
+
+    // --- HISTORIAL ---
+
+    async function fetchHistory() {
+        const params = new URLSearchParams({ q: $('history-q').value.trim(), status: $('history-status').value, days: $('history-days').value });
         try {
-            const formData = new FormData();
-            for (const key in bodyData) {
-                formData.append(key, bodyData[key]);
-            }
-
-            const response = await fetch(url, {
-                method: 'POST',
-                body: formData,
-                headers: {
-                    'X-Requested-With': 'XMLHttpRequest'
-                }
-            });
-
-            if (response.status === 401) { window.location.href = '/login'; return; }
-            if (!response.ok) throw new Error('Error del servidor');
-            
-            const result = await response.json();
-            
-            if (result.success) {
-                // Forzar actualización inmediata tras acción exitosa
-                fetchStatus();
-            } else {
-                console.error('La acción no se completó con éxito:', result.message);
-            }
+            renderHistory((await getJson(`/api/history?${params}`)).jobs);
         } catch (error) {
-            console.error('Error al realizar la acción de fondo:', error);
+            console.error('Error cargando el historial:', error);
         }
     }
 
-    // --- MODAL DE CONFIRMACIÓN ---
+    function renderHistory(jobs) {
+        const tbody = $('history-tbody');
+        if (jobs.length === 0) {
+            tbody.innerHTML = '<tr class="empty-row"><td colspan="7">No hay trabajos con estos filtros.</td></tr>';
+            return;
+        }
+        tbody.innerHTML = jobs.map(job => {
+            const [label, tone] = STATUS_LABELS[job.status] || STATUS_LABELS.active;
+            return `
+            <tr>
+                <td class="font-mono">${escapeHtml(job.id)}</td>
+                <td class="text-muted nowrap">${escapeHtml(formatDate(job.created_at))}</td>
+                <td>${renderUser(job.user, job.account)}</td>
+                <td><div class="job-name" title="${escapeHtml(job.name || '')}">${escapeHtml(job.name || '—')}</div></td>
+                <td>${job.sheets ? NUM.format(job.sheets) : '<span class="text-muted">—</span>'}</td>
+                <td>
+                    <span class="pill pill-${tone}">${label}</span>
+                    ${job.unauthorized ? '<span class="pill pill-bad">Sin autorizar</span>' : ''}
+                </td>
+                <td class="text-right">
+                    ${job.reprintable ? `<button class="btn btn-secondary btn-sm action-reprint" data-job-id="${escapeHtml(job.id)}"
+                        data-printer="${escapeHtml(job.printer)}" data-user="${escapeHtml(job.user)}">Reimprimir</button>` : ''}
+                </td>
+            </tr>`;
+        }).join('');
+    }
+
+    function formatDate(epoch) {
+        if (!epoch) return '—';
+        return new Date(epoch * 1000).toLocaleString('es-CL', { day: '2-digit', month: '2-digit', hour: '2-digit', minute: '2-digit' });
+    }
+
+    // --- EQUIPOS ---
+
+    async function fetchUsers() {
+        try {
+            const { users } = await getJson(`/api/report?days=${$('users-days').value}`);
+            const tbody = $('users-tbody');
+            if (users.length === 0) {
+                tbody.innerHTML = '<tr class="empty-row"><td colspan="5">Sin actividad en este período.</td></tr>';
+                return;
+            }
+            tbody.innerHTML = users.map(user => `
+                <tr>
+                    <td>${escapeHtml(user.user)}</td>
+                    <td class="text-right">${NUM.format(user.sheets)}</td>
+                    <td class="text-right">${NUM.format(user.printed)}</td>
+                    <td class="text-right">${NUM.format(user.denied)}</td>
+                    <td class="text-muted nowrap">${escapeHtml(formatDate(user.last_at))}</td>
+                </tr>`).join('');
+        } catch (error) {
+            console.error('Error cargando equipos:', error);
+        }
+    }
+
+    // --- ACCIONES ---
+
+    document.body.addEventListener('click', async (e) => {
+        const target = e.target.closest('button');
+        if (!target) return;
+        const jobId = target.dataset.jobId;
+        const user = target.dataset.user;
+
+        if (target.classList.contains('action-preview')) {
+            openPreview(jobId, Number(target.dataset.pages), target.dataset.name);
+        } else if (target.classList.contains('action-approve')) {
+            performAction('/approve', { job_id: jobId, user });
+        } else if (target.classList.contains('action-deny')) {
+            if (await showConfirmModal('Denegar impresión', `¿Denegar y eliminar el trabajo #${jobId} (${user})? No se imprimirá.`)) {
+                performAction('/deny', { job_id: jobId });
+            }
+        } else if (target.classList.contains('action-cancel')) {
+            if (await showConfirmModal('Cancelar impresión', `¿Cancelar el trabajo #${jobId}?`)) {
+                performAction('/cancel', { job_id: jobId });
+            }
+        } else if (target.classList.contains('action-reprint')) {
+            const printer = target.dataset.printer;
+            if (await showConfirmModal('Reimprimir documento', `¿Reimprimir el trabajo #${jobId} (${user}) en "${printer}"?`)) {
+                performAction('/reprint', { job_id: jobId, printer, user });
+            }
+        }
+    });
+
+    async function performAction(url, bodyData) {
+        try {
+            const formData = new FormData();
+            for (const key in bodyData) formData.append(key, bodyData[key]);
+
+            const response = await fetch(url, { method: 'POST', body: formData, headers: { 'X-Requested-With': 'XMLHttpRequest' } });
+            if (response.status === 401) { window.location.href = '/login'; return; }
+            if (!response.ok) throw new Error('Error del servidor');
+
+            const result = await response.json();
+            showToast(result.message, !result.success);
+            if (result.success) {
+                fetchStatus();
+                refreshView();
+            }
+        } catch (error) {
+            console.error('Error al realizar la acción:', error);
+            showToast('No se pudo completar la acción.', true);
+        }
+    }
+
+    function showToast(message, isError) {
+        const toast = $('toast');
+        toast.textContent = message;
+        toast.classList.toggle('toast-error', Boolean(isError));
+        toast.hidden = false;
+        clearTimeout(showToast.timer);
+        showToast.timer = setTimeout(() => { toast.hidden = true; }, 4000);
+    }
+
+    $('alert-ack').addEventListener('click', () => performAction('/alerts/ack', {}));
+    $('alert-view').addEventListener('click', () => {
+        $('history-status').value = 'unauthorized';
+        $('history-days').value = '365';
+        if (currentView === 'historial') fetchHistory();
+    });
+
+    // --- MODALES ---
 
     function showConfirmModal(title, message) {
-        modalTitle.textContent = title;
-        modalMessage.textContent = message;
-        confirmModal.classList.add('show');
-        
-        return new Promise((resolve) => {
-            modalResolver = resolve;
-        });
+        $('modal-title').textContent = title;
+        $('modal-message').textContent = message;
+        $('confirm-modal').classList.add('show');
+        return new Promise(resolve => { modalResolver = resolve; });
     }
 
     function closeModal(result) {
-        confirmModal.classList.remove('show');
+        $('confirm-modal').classList.remove('show');
         if (modalResolver) {
             modalResolver(result);
             modalResolver = null;
         }
     }
 
-    // Cerrar modal con botones
-    modalBtnConfirm.addEventListener('click', () => closeModal(true));
-    modalBtnCancel.addEventListener('click', () => closeModal(false));
-    modalCloseBtn.addEventListener('click', () => closeModal(false));
-    
-    // Cerrar al hacer clic fuera del modal
-    confirmModal.addEventListener('click', (e) => {
-        if (e.target === confirmModal) {
+    $('modal-btn-confirm').addEventListener('click', () => closeModal(true));
+    $('modal-btn-cancel').addEventListener('click', () => closeModal(false));
+    $('modal-close-btn').addEventListener('click', () => closeModal(false));
+    $('confirm-modal').addEventListener('click', (e) => { if (e.target === e.currentTarget) closeModal(false); });
+
+    function openPreview(jobId, pages, name) {
+        previewJob = { id: jobId, pages: pages || 1 };
+        $('preview-title').textContent = name ? `#${jobId} · ${name}` : `Trabajo #${jobId}`;
+        showPreviewPage(1);
+        $('preview-modal').classList.add('show');
+    }
+
+    function showPreviewPage(page) {
+        previewCurrentPage = page;
+        $('preview-image').src = `/preview/${encodeURIComponent(previewJob.id)}.png?large=1&page=${page}`;
+        $('preview-page').textContent = `Página ${page} de ${previewJob.pages}`;
+        $('preview-prev').disabled = page <= 1;
+        $('preview-next').disabled = page >= previewJob.pages;
+    }
+
+    function closePreview() {
+        $('preview-modal').classList.remove('show');
+        $('preview-image').removeAttribute('src');
+        previewJob = null;
+    }
+
+    $('preview-prev').addEventListener('click', () => showPreviewPage(previewCurrentPage - 1));
+    $('preview-next').addEventListener('click', () => showPreviewPage(previewCurrentPage + 1));
+    $('preview-close-btn').addEventListener('click', closePreview);
+    $('preview-modal').addEventListener('click', (e) => { if (e.target === e.currentTarget) closePreview(); });
+
+    document.addEventListener('keydown', (e) => {
+        if (e.key === 'Escape') {
             closeModal(false);
+            if (previewJob) closePreview();
         }
+        if (!previewJob) return;
+        if (e.key === 'ArrowLeft' && previewCurrentPage > 1) showPreviewPage(previewCurrentPage - 1);
+        if (e.key === 'ArrowRight' && previewCurrentPage < previewJob.pages) showPreviewPage(previewCurrentPage + 1);
     });
 
     // --- MODO REVISIÓN ---
@@ -319,10 +461,10 @@ document.addEventListener('DOMContentLoaded', () => {
     reviewToggle.addEventListener('change', async () => {
         const enabled = reviewToggle.checked;
         const confirmed = await showConfirmModal(
-            enabled ? 'Activar Modo Revisión' : 'Desactivar Modo Revisión',
+            enabled ? 'Activar modo revisión' : 'Desactivar modo revisión',
             enabled
                 ? 'Cada nueva impresión quedará retenida hasta que la autorices desde este panel.'
-                : 'Las nuevas impresiones se imprimirán directamente sin revisión. Los trabajos ya retenidos seguirán esperando autorización.'
+                : 'Las nuevas impresiones se imprimirán directamente. Los trabajos que ya están esperando seguirán necesitando autorización.'
         );
         if (!confirmed) {
             reviewToggle.checked = !enabled;
@@ -331,65 +473,47 @@ document.addEventListener('DOMContentLoaded', () => {
         performAction('/review-mode', { enabled: enabled ? '1' : '0' });
     });
 
-    // --- VISTA PREVIA ---
-
-    function openPreview(jobId, pages, name) {
-        previewJob = { id: jobId, pages: pages || 1 };
-        previewTitle.textContent = name ? `#${jobId} · ${name}` : `Trabajo #${jobId}`;
-        showPreviewPage(1);
-        previewModal.classList.add('show');
-    }
-
-    function showPreviewPage(page) {
-        previewCurrentPage = page;
-        previewImage.src = `/preview/${previewJob.id}.png?large=1&page=${page}`;
-        previewPage.textContent = `Página ${page} de ${previewJob.pages}`;
-        previewPrev.disabled = page <= 1;
-        previewNext.disabled = page >= previewJob.pages;
-    }
-
-    function closePreview() {
-        previewModal.classList.remove('show');
-        previewImage.removeAttribute('src');
-        previewJob = null;
-    }
-
-    previewPrev.addEventListener('click', () => showPreviewPage(previewCurrentPage - 1));
-    previewNext.addEventListener('click', () => showPreviewPage(previewCurrentPage + 1));
-    previewCloseBtn.addEventListener('click', closePreview);
-    previewModal.addEventListener('click', (e) => {
-        if (e.target === previewModal) closePreview();
-    });
-
     // --- TEMA CLARO / OSCURO ---
 
-    const themeToggle = document.getElementById('theme-toggle');
-    const prefersLight = window.matchMedia('(prefers-color-scheme: light)');
-
-    themeToggle.addEventListener('click', () => {
+    $('theme-toggle').addEventListener('click', () => {
         const next = document.documentElement.getAttribute('data-theme') === 'light' ? 'dark' : 'light';
         document.documentElement.setAttribute('data-theme', next);
         try { localStorage.setItem('webcups-theme', next); } catch (e) {}
     });
 
     // Seguir el tema del sistema mientras el usuario no haya elegido uno
-    prefersLight.addEventListener('change', (e) => {
+    window.matchMedia('(prefers-color-scheme: light)').addEventListener('change', (e) => {
         let saved = null;
         try { saved = localStorage.getItem('webcups-theme'); } catch (err) {}
-        if (!saved) {
-            document.documentElement.setAttribute('data-theme', e.matches ? 'light' : 'dark');
-        }
+        if (!saved) document.documentElement.setAttribute('data-theme', e.matches ? 'light' : 'dark');
     });
 
     // --- UTILIDADES ---
 
-    function escapeHtml(str) {
-        if (typeof str !== 'string') return str;
-        return str
+    function escapeHtml(value) {
+        return String(value ?? '')
             .replace(/&/g, '&amp;')
             .replace(/</g, '&lt;')
             .replace(/>/g, '&gt;')
             .replace(/"/g, '&quot;')
             .replace(/'/g, '&#039;');
     }
+
+    // --- INICIO ---
+
+    $('report-days').addEventListener('change', fetchReport);
+    $('users-days').addEventListener('change', fetchUsers);
+    $('history-status').addEventListener('change', fetchHistory);
+    $('history-days').addEventListener('change', fetchHistory);
+    $('history-q').addEventListener('input', () => {
+        clearTimeout(searchTimer);
+        searchTimer = setTimeout(fetchHistory, 250);
+    });
+    window.addEventListener('hashchange', showView);
+    window.addEventListener('resize', () => { if (lastReport && currentView === 'resumen') drawDayChart(lastReport.by_day); });
+
+    showView();
+    fetchStatus();
+    setInterval(fetchStatus, 3000);
+    setInterval(() => { if (!document.hidden) refreshView(); }, 30000);
 });

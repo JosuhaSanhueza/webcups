@@ -3,8 +3,12 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Impresiones Lab2 - Iniciar sesión</title>
-    <link rel="icon" href="{{ url_for('static', filename='favicon.ico') }}">
+    <title>EscolarApp Print - Iniciar sesión</title>
+    <link rel="icon" type="image/svg+xml" href="{{ url_for('static', filename='logo.svg') }}">
+    <link rel="alternate icon" href="{{ url_for('static', filename='favicon.ico') }}">
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:wght@400;500;600;700&display=swap" rel="stylesheet">
     <script>
         (function () {
             var saved = null;
@@ -19,9 +23,12 @@
     <div class="background-glow"></div>
     <main class="login-page">
         <form class="login-card glass-card" method="post" action="/login">
-            <div>
-                <h1>Panel de Control</h1>
-                <p class="subtitle">Administrador de Impresiones Lab2</p>
+            <div class="login-brand">
+                <img src="{{ url_for('static', filename='logo.svg') }}" alt="">
+                <div>
+                    <h1>EscolarApp <em>Print</em></h1>
+                    <p class="subtitle">Impresiones Lab2</p>
+                </div>
             </div>
             {% if error %}<p class="login-error" role="alert">{{ error }}</p>{% endif %}
             {% if not disabled %}

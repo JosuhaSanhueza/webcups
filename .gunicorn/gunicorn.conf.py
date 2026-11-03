@@ -21,3 +21,9 @@ keepalive = 2
 loglevel = "info"
 accesslog = "-"
 errorlog = "-"
+
+
+# Recolector de trabajos en segundo plano (un candado deja activo a un solo worker)
+def post_worker_init(worker):
+    from app import start_collector
+    start_collector()
