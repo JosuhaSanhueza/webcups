@@ -1,4 +1,6 @@
-from flask import Flask, render_template, request, redirect, flash, jsonify, Response, send_file, abort
+from flask import Flask, render_template, request, redirect, flash, jsonify, Response, send_file, abort, session
+from werkzeug.security import check_password_hash
+from datetime import timedelta
 import subprocess
 import os
 import time
@@ -9,9 +11,33 @@ import io
 import gzip
 import re
 import shutil
+import secrets
 
 app = Flask(__name__, static_folder="static")
-app.secret_key = os.environ.get("FLASK_SECRET_KEY", "orion_secure_key")
+
+
+def load_auth_config():
+    """Lee la contraseña (hash) y la clave de sesión, creadas con set_password.py."""
+    try:
+        with open(os.environ.get("WEBCUPS_CONFIG", "/etc/webcups.conf")) as f:
+            return json.load(f)
+    except (OSError, ValueError):
+        print("AVISO: panel sin contraseña configurada; ejecuta set_password.py", flush=True)
+        return {}
+
+
+AUTH = load_auth_config()
+# Sin configuración el login queda deshabilitado, nunca abierto
+app.secret_key = AUTH.get("secret_key") or secrets.token_hex(32)
+app.config.update(
+    SESSION_COOKIE_HTTPONLY=True,
+    SESSION_COOKIE_SAMESITE="Lax",
+    PERMANENT_SESSION_LIFETIME=timedelta(hours=12)
+)
+
+MAX_LOGIN_FAILS = 5
+LOGIN_LOCK_SECONDS = 300
+LOGIN_FAILS = {}
 
 LAST_ACTION = {"type": None, "job": None, "user": None, "time": 0}
 
@@ -270,6 +296,53 @@ def get_status(active_jobs):
         return (f"{len(active_jobs)} esperando autorización", "warn")
 
     return ("Esperando documentos", "ok")
+
+
+@app.before_request
+def require_login():
+    if request.endpoint in ("login", "static") or session.get("auth"):
+        return None
+    if request.method == "GET" and request.endpoint == "index":
+        return redirect("/login")
+    return jsonify({"success": False, "error": "auth", "message": "Sesión no iniciada."}), 401
+
+
+@app.route("/login", methods=["GET", "POST"])
+def login():
+    if session.get("auth"):
+        return redirect("/")
+
+    password_hash = AUTH.get("password_hash")
+    if not password_hash:
+        return render_template("login.html", error="El panel aún no tiene contraseña configurada.", disabled=True), 503
+
+    if request.method == "GET":
+        return render_template("login.html", error=None, disabled=False)
+
+    ip = request.remote_addr
+    fails, first_fail = LOGIN_FAILS.get(ip, (0, 0))
+    if time.time() - first_fail > LOGIN_LOCK_SECONDS:
+        fails = 0
+
+    if fails >= MAX_LOGIN_FAILS:
+        return render_template("login.html", error="Demasiados intentos. Espera unos minutos.", disabled=False), 429
+
+    if check_password_hash(password_hash, request.form.get("password", "")):
+        LOGIN_FAILS.pop(ip, None)
+        session.clear()
+        session.permanent = True
+        session["auth"] = True
+        return redirect("/")
+
+    LOGIN_FAILS[ip] = (fails + 1, first_fail if fails else time.time())
+    time.sleep(1)
+    return render_template("login.html", error="Contraseña incorrecta.", disabled=False), 401
+
+
+@app.route("/logout", methods=["POST"])
+def logout():
+    session.clear()
+    return redirect("/login")
 
 
 @app.route("/")

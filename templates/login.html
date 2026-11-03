@@ -1,0 +1,37 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Impresiones Lab2 - Iniciar sesión</title>
+    <link rel="icon" href="{{ url_for('static', filename='favicon.ico') }}">
+    <script>
+        (function () {
+            var saved = null;
+            try { saved = localStorage.getItem('webcups-theme'); } catch (e) {}
+            var light = window.matchMedia && window.matchMedia('(prefers-color-scheme: light)').matches;
+            document.documentElement.setAttribute('data-theme', saved || (light ? 'light' : 'dark'));
+        })();
+    </script>
+    <link rel="stylesheet" href="{{ url_for('static', filename='css/style.css') }}">
+</head>
+<body>
+    <div class="background-glow"></div>
+    <main class="login-page">
+        <form class="login-card glass-card" method="post" action="/login">
+            <div>
+                <h1>Panel de Control</h1>
+                <p class="subtitle">Administrador de Impresiones Lab2</p>
+            </div>
+            {% if error %}<p class="login-error" role="alert">{{ error }}</p>{% endif %}
+            {% if not disabled %}
+            <label>
+                Contraseña
+                <input type="password" name="password" autocomplete="current-password" required autofocus>
+            </label>
+            <button type="submit" class="btn btn-primary">Entrar</button>
+            {% endif %}
+        </form>
+    </main>
+</body>
+</html>

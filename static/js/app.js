@@ -75,6 +75,7 @@ document.addEventListener('DOMContentLoaded', () => {
     async function fetchStatus() {
         try {
             const response = await fetch('/api/status');
+            if (response.status === 401) { window.location.href = '/login'; return; }
             if (!response.ok) throw new Error('Error de red al consultar API');
             const data = await response.json();
             updateUI(data);
@@ -265,6 +266,7 @@ document.addEventListener('DOMContentLoaded', () => {
                 }
             });
 
+            if (response.status === 401) { window.location.href = '/login'; return; }
             if (!response.ok) throw new Error('Error del servidor');
             
             const result = await response.json();
