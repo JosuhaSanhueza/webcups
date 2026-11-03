@@ -1,6 +1,6 @@
 #!/bin/bash
-# Bloquea las impresiones sin autorizar: la cola que usan los PCs queda pausada y una cola
-# privada (<cola>_Salida), conectada a la misma impresora, solo acepta órdenes del propio servidor.
+# Bloquea las impresiones sin autorizar: la cola que usan los PCs apunta a un destino de retención
+# y una cola privada (<cola>_Salida), conectada a la impresora, solo acepta órdenes del servidor.
 #
 # Instalar:  sudo bash setup_review_queue.sh <cola>
 # Deshacer:  sudo bash setup_review_queue.sh <cola> --undo
@@ -9,23 +9,41 @@ set -euo pipefail
 QUEUE="${1:?Uso: setup_review_queue.sh <cola> [--undo]}"
 ACTION="${2:-install}"
 OUTPUT="${QUEUE}_Salida"
+HOLD_URI="webcups-hold:/"
 CUPSD_CONF="${CUPSD_CONF:-/etc/cups/cupsd.conf}"
 BACKUP="${CUPSD_CONF}.webcups.bak"
+BACKEND_DIR="${BACKEND_DIR:-/usr/lib/cups/backend}"
+HERE="$(cd "$(dirname "$0")" && pwd)"
+
+device_of() {
+    lpstat -v "$1" 2>/dev/null | sed -E 's/^[^:]*: *//'
+}
 
 if [ "$ACTION" = "--undo" ]; then
-    lpmove "$OUTPUT" "$QUEUE" 2>/dev/null || true
-    lpadmin -x "$OUTPUT" 2>/dev/null || true
+    DEVICE="$(device_of "$OUTPUT")"
+    if [ -n "$DEVICE" ]; then
+        lpadmin -p "$QUEUE" -v "$DEVICE" -o job-hold-until-default=no-hold
+        lpmove "$OUTPUT" "$QUEUE" 2>/dev/null || true
+        lpadmin -x "$OUTPUT"
+    fi
     cupsenable "$QUEUE"
     cupsaccept "$QUEUE"
+    rm -f "$BACKEND_DIR/webcups-hold"
     [ -f "$BACKUP" ] && cp "$BACKUP" "$CUPSD_CONF" && systemctl restart cups
-    echo "DESHECHO: $QUEUE vuelve a imprimir directo; revisa el Modo revisión en el panel."
+    echo "DESHECHO: $QUEUE vuelve a imprimir directo."
     exit 0
 fi
 
-DEVICE="$(lpstat -v "$QUEUE" | sed -E 's/^[^:]*: *//')"
+# Si ya estaba instalado, la impresora real es la de la cola de salida
+DEVICE="$(device_of "$QUEUE")"
+case "$DEVICE" in
+    webcups-hold*) DEVICE="$(device_of "$OUTPUT")" ;;
+esac
 PPD="${PPD_DIR:-/etc/cups/ppd}/${QUEUE}.ppd"
-[ -n "$DEVICE" ] || { echo "ERROR: no encontré la cola $QUEUE" >&2; exit 1; }
+[ -n "$DEVICE" ] || { echo "ERROR: no encontré el dispositivo de $QUEUE" >&2; exit 1; }
 [ -f "$PPD" ] || { echo "ERROR: no existe $PPD" >&2; exit 1; }
+
+install -m 755 -o "$(id -u)" "$HERE/webcups-hold" "$BACKEND_DIR/webcups-hold"
 
 if ! grep -q '^<Policy salida>' "$CUPSD_CONF"; then
     [ -f "$BACKUP" ] || cp "$CUPSD_CONF" "$BACKUP"
@@ -53,21 +71,22 @@ POLICY
     sleep 2
 fi
 
+# Primero la salida, para no perder nunca la referencia a la impresora real
 lpadmin -p "$OUTPUT" -E -v "$DEVICE" -P "$PPD" -D "Salida de $QUEUE (solo panel)" \
     -o printer-op-policy=salida -o printer-is-shared=false -o job-hold-until-default=no-hold
 cupsenable "$OUTPUT"
 cupsaccept "$OUTPUT"
 
-lpadmin -p "$QUEUE" -o job-hold-until-default=indefinite
-cupsdisable -r "Esperando autorización" "$QUEUE"
+lpadmin -p "$QUEUE" -v "$HOLD_URI" -o job-hold-until-default=indefinite
+cupsenable "$QUEUE"
 cupsaccept "$QUEUE"
 
-# El estado debe sobrevivir a un reinicio de CUPS, que además ocurre con cada rotación de logs
 systemctl restart cups
 sleep 2
-if ! lpstat -p "$QUEUE" | grep -qiE 'disabled|deshabilitada'; then
-    echo "ERROR: $QUEUE no quedó pausada." >&2
+if [ "$(device_of "$QUEUE")" != "$HOLD_URI" ]; then
+    echo "ERROR: $QUEUE no quedó apuntando al destino de retención." >&2
     exit 1
 fi
-lpstat -a "$QUEUE" "$OUTPUT"
-echo "APLICADO: $QUEUE pausada y $OUTPUT lista."
+lpstat -a "$QUEUE"
+lpstat -a "$OUTPUT"
+echo "APLICADO: $QUEUE activa con retención y $OUTPUT conectada a $DEVICE."

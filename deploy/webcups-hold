@@ -1,0 +1,9 @@
+#!/bin/sh
+# Destino de retención de EscolarApp Print: un trabajo que llega aquí no pasó por Autorizar
+# y CUPS lo vuelve a retener (código 3). La cola sigue "inactiva", así Windows no muestra errores.
+if [ "$#" -eq 0 ]; then
+    echo 'direct webcups-hold "Retencion" "EscolarApp Print"'
+    exit 0
+fi
+[ "$#" -lt 6 ] && cat > /dev/null
+exit 3

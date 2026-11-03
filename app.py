@@ -52,8 +52,10 @@ CACHE_MAX_AGE = 7 * 86400
 DB_PATH = os.environ.get("WEBCUPS_DB", "/var/lib/webcups/webcups.db")
 SYNC_SECONDS = 5
 IPP_URI = os.environ.get("WEBCUPS_IPP_URI", "ipp://localhost/")
-# Cola privada conectada a la impresora: la pública queda pausada y solo Autorizar saca trabajos
+# Cola privada conectada a la impresora: la pública apunta al destino de retención y
+# solo Autorizar saca trabajos
 OUTPUT_SUFFIX = "_Salida"
+HOLD_URI = "webcups-hold:/"
 os.makedirs(CACHE_DIR, exist_ok=True)
 os.makedirs(os.path.dirname(DB_PATH), exist_ok=True)
 
@@ -206,11 +208,11 @@ def get_page_count(job_id):
 
 
 def get_printers():
-    """Colas de CUPS: {nombre: {hold, stopped}}."""
+    """Colas de CUPS: {nombre: {hold, device}}."""
     return {
         row["printer-name"]: {
             "hold": row.get("job-hold-until-default") == "indefinite",
-            "stopped": row.get("printer-state") == "stopped"
+            "device": row.get("device-uri", "")
         }
         for row in run_ipptool("get-printers.test")
     }
@@ -258,7 +260,7 @@ def get_active_jobs():
             user, account = split_user(row.get("job-originating-user-name"))
             queue = row.get("job-printer-uri", "").rsplit("/", 1)[-1]
             state = row.get("job-state")
-            paused = printers.get(queue, {}).get("stopped") and queue + OUTPUT_SUFFIX in printers
+            guarded = queue + OUTPUT_SUFFIX in printers
 
             jobs.append({
                 "id": job_id,
@@ -266,7 +268,7 @@ def get_active_jobs():
                 "account": account,
                 "printer": public_name(queue),
                 "name": row.get("job-name", ""),
-                "held": state == "pending-held" or (state == "pending" and paused),
+                "held": state == "pending-held" or (state == "pending" and guarded),
                 "copies": copies,
                 "duplex": duplex,
                 "pages": pages,
@@ -318,7 +320,7 @@ def get_active_jobs_lpstat():
     return jobs
 
 
-def record_job(conn, row, review, baseline):
+def record_job(conn, row, review, baseline, guarded=()):
     """Inserta o actualiza un trabajo de CUPS y marca los impresos sin autorización."""
     job_id = int(row["job-id"])
     state = row.get("job-state", "")
@@ -348,6 +350,10 @@ def record_job(conn, row, review, baseline):
     """, (user, account, public_name(row.get("job-printer-uri", "").rsplit("/", 1)[-1]), row.get("job-name", ""),
           pages, copies, int(duplex), compute_sheets(pages, copies, duplex), state, created, finished, job_id))
 
+    # En una cola con destino de retención, "processing" no imprime: CUPS lo volverá a retener
+    if state == "processing" and row.get("job-printer-uri", "").rsplit("/", 1)[-1] in guarded:
+        return
+
     # Con el modo revisión activo, nada debería imprimirse sin pasar por Autorizar
     conn.execute("""
         UPDATE jobs SET unauthorized = 1
@@ -361,15 +367,17 @@ def sync_jobs():
     with closing(db()) as conn:
         first_run = conn.execute("SELECT 1 FROM meta WHERE key = 'baseline_at'").fetchone() is None
 
-    review = get_review_printers()
+    printers = get_printers()
+    review = {name: info["hold"] for name, info in printers.items() if not name.endswith(OUTPUT_SUFFIX)}
     review_on = bool(review) and all(review.values())
+    guarded = {name for name, info in printers.items() if info["device"] == HOLD_URI}
     rows = run_ipptool("get-jobs.test", which="not-completed", limit=500)
     rows += run_ipptool("get-jobs.test", which="completed", limit=500 if first_run else 50)
 
     with closing(db()) as conn, conn:
         for row in rows:
             if row.get("job-id", "").isdigit():
-                record_job(conn, row, review_on, first_run)
+                record_job(conn, row, review_on, first_run, guarded)
         if first_run:
             conn.execute("INSERT INTO meta (key, value) VALUES ('baseline_at', ?)", (str(int(time.time())),))
 
@@ -779,18 +787,22 @@ def preview(job_id):
 
 
 def release_job(job_id):
-    """Libera un trabajo y lo pasa a la cola de salida. Si falla, sigue sin imprimirse."""
+    """Pasa un trabajo a la cola de salida y lo libera. Si falla, sigue sin imprimirse."""
     queue = next((row.get("job-printer-uri", "").rsplit("/", 1)[-1]
                   for row in run_ipptool("get-jobs.test", which="not-completed", limit=500)
                   if row.get("job-id") == job_id), "")
     output = queue + OUTPUT_SUFFIX
 
-    if output not in get_printers():
-        return subprocess.run(["lp", "-i", job_id, "-H", "resume"], capture_output=True, text=True, timeout=5)
+    if output in get_printers():
+        # Mover antes de liberar: liberado en la cola pública caería en el destino de retención
+        moved = subprocess.run(["lpmove", job_id, output], capture_output=True, text=True, timeout=5)
+        if moved.returncode != 0:
+            return moved
+        # Un trabajo enviado con no-hold no está retenido y resume falla: ya va a imprimirse
+        subprocess.run(["lp", "-i", job_id, "-H", "resume"], capture_output=True, text=True, timeout=5)
+        return moved
 
-    # Un trabajo enviado con no-hold no está retenido y resume falla: lo que decide es el traslado
-    subprocess.run(["lp", "-i", job_id, "-H", "resume"], capture_output=True, text=True, timeout=5)
-    return subprocess.run(["lpmove", job_id, output], capture_output=True, text=True, timeout=5)
+    return subprocess.run(["lp", "-i", job_id, "-H", "resume"], capture_output=True, text=True, timeout=5)
 
 
 @app.route("/approve", methods=["POST"])
@@ -847,14 +859,14 @@ def review_mode():
         if printer.endswith(OUTPUT_SUFFIX):
             continue
 
-        commands = [["lpadmin", "-p", printer, "-o", f"job-hold-until-default={value}"]]
-        if printer + OUTPUT_SUFFIX in printers:
-            commands.append(["cupsdisable", printer] if enabled else ["cupsenable", printer])
+        command = ["lpadmin", "-p", printer, "-o", f"job-hold-until-default={value}"]
+        output = printers.get(printer + OUTPUT_SUFFIX)
+        if output:
+            command += ["-v", HOLD_URI if enabled else output["device"]]
 
-        for command in commands:
-            result = subprocess.run(command, capture_output=True, text=True, timeout=5)
-            if result.returncode != 0:
-                errors.append(f"{printer}: {result.stderr.strip()}")
+        result = subprocess.run(command, capture_output=True, text=True, timeout=5)
+        if result.returncode != 0:
+            errors.append(f"{printer}: {result.stderr.strip()}")
 
     if errors:
         return ajax_or_redirect(False, "Error al cambiar el modo revisión: " + "; ".join(errors))
