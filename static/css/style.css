@@ -621,6 +621,8 @@ button.thumb:hover {
 .login-page {
     min-height: 100vh;
     display: flex;
+    flex-direction: column;
+    gap: 16px;
     align-items: center;
     justify-content: center;
     padding: 16px;
@@ -771,12 +773,29 @@ button.thumb:hover {
 
 /* Footer */
 .app-footer {
+    margin-top: auto;
+    padding: 16px 28px;
+    border-top: 1px solid var(--border-color);
     text-align: center;
     color: var(--text-muted);
     font-size: 0.8rem;
-    margin-top: 20px;
-    border-top: 1px solid var(--border-color);
-    padding-top: 20px;
+}
+
+.app-footer a {
+    color: var(--accent-text);
+    text-decoration: none;
+    font-weight: 600;
+}
+
+.app-footer a:hover,
+.app-footer a:focus-visible {
+    text-decoration: underline;
+}
+
+.login-page .app-footer {
+    margin-top: 0;
+    padding: 0;
+    border-top: none;
 }
 
 /* Animaciones */
