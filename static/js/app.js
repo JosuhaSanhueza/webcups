@@ -15,6 +15,14 @@ document.addEventListener('DOMContentLoaded', () => {
     let previewCurrentPage = 1;
     let lastReport = null;
     let searchTimer = null;
+    let knownHeld = null;
+    let heldCount = 0;
+    let blinkOn = false;
+    let audioContext = null;
+    let desktopNotice = null;
+    const BASE_TITLE = document.title;
+    const iconLink = document.querySelector('link[rel="icon"]');
+    const BASE_ICON = { href: iconLink.href, type: iconLink.type };
 
     // --- NAVEGACIÓN ---
 
@@ -58,6 +66,7 @@ document.addEventListener('DOMContentLoaded', () => {
             $('active-badge').textContent = `${data.active.length} en cola`;
             $('nav-pending').textContent = held;
             $('nav-pending').hidden = held === 0;
+            updateAlerts(data.active.filter(job => job.held));
             renderAlerts(data.alerts);
 
             const serialized = JSON.stringify(data.active);
@@ -69,6 +78,159 @@ document.addEventListener('DOMContentLoaded', () => {
             console.error('Error actualizando el panel:', error);
         }
     }
+
+    // --- ALERTAS DE IMPRESIONES POR AUTORIZAR ---
+
+    function alertsOn() {
+        try { return localStorage.getItem('webcups-alerts') === 'on'; } catch (e) { return false; }
+    }
+
+    function canNotify() {
+        return window.isSecureContext && 'Notification' in window;
+    }
+
+    function updateAlerts(heldJobs) {
+        const newJobs = knownHeld ? heldJobs.filter(job => !knownHeld.has(job.id)) : [];
+        const changed = heldJobs.length !== heldCount;
+        knownHeld = new Set(heldJobs.map(job => job.id));
+        heldCount = heldJobs.length;
+
+        if (changed) drawTabIcon();
+        paintTitle();
+
+        if (heldCount === 0 && desktopNotice) {
+            desktopNotice.close();
+            desktopNotice = null;
+        }
+        if (newJobs.length === 0) return;
+
+        showToast(newJobs.length === 1 ? '1 impresión nueva por autorizar.' : `${newJobs.length} impresiones nuevas por autorizar.`);
+        if (alertsOn()) {
+            playChime();
+            showDesktopNotice(newJobs);
+        }
+    }
+
+    function paintTitle() {
+        if (heldCount === 0) {
+            document.title = BASE_TITLE;
+        } else if (document.hidden && blinkOn) {
+            document.title = heldCount === 1 ? '¡1 por autorizar!' : `¡${heldCount} por autorizar!`;
+        } else {
+            document.title = `(${heldCount}) ${BASE_TITLE}`;
+        }
+    }
+
+    function drawTabIcon() {
+        if (heldCount === 0) {
+            iconLink.type = BASE_ICON.type;
+            iconLink.href = BASE_ICON.href;
+            return;
+        }
+
+        const count = heldCount;
+        const image = new Image();
+        image.onload = () => {
+            if (count !== heldCount) return;
+            const canvas = document.createElement('canvas');
+            canvas.width = canvas.height = 64;
+            const ctx = canvas.getContext('2d');
+            ctx.drawImage(image, 0, 0, 64, 64);
+            ctx.beginPath();
+            ctx.arc(44, 20, 20, 0, Math.PI * 2);
+            ctx.fillStyle = '#DC2626';
+            ctx.fill();
+            ctx.fillStyle = '#FFFFFF';
+            ctx.font = 'bold 28px sans-serif';
+            ctx.textAlign = 'center';
+            ctx.textBaseline = 'middle';
+            ctx.fillText(count > 9 ? '9+' : String(count), 44, 22);
+            iconLink.type = 'image/png';
+            iconLink.href = canvas.toDataURL('image/png');
+        };
+        image.src = BASE_ICON.href;
+    }
+
+    function playChime() {
+        if (!audioContext || audioContext.state !== 'running') return;
+        [880, 1175].forEach((frequency, index) => {
+            const start = audioContext.currentTime + index * 0.18;
+            const oscillator = audioContext.createOscillator();
+            const gain = audioContext.createGain();
+            oscillator.frequency.value = frequency;
+            gain.gain.setValueAtTime(0.15, start);
+            gain.gain.exponentialRampToValueAtTime(0.001, start + 0.16);
+            oscillator.connect(gain).connect(audioContext.destination);
+            oscillator.start(start);
+            oscillator.stop(start + 0.16);
+        });
+    }
+
+    function showDesktopNotice(newJobs) {
+        if (!canNotify() || Notification.permission !== 'granted') return;
+        const job = newJobs[0];
+        const sheets = job.sheets ? ` · ${job.sheets} ${job.sheets === 1 ? 'hoja' : 'hojas'}` : '';
+        const body = newJobs.length === 1
+            ? `${job.user}: ${job.name || 'Documento'}${sheets}`
+            : `${newJobs.length} trabajos nuevos. Total en espera: ${heldCount}.`;
+
+        if (desktopNotice) desktopNotice.close();
+        desktopNotice = new Notification('Impresiones por autorizar', {
+            body, tag: 'webcups-pending', renotify: true, requireInteraction: true, icon: BASE_ICON.href
+        });
+        desktopNotice.onclick = () => {
+            window.focus();
+            location.hash = 'cola';
+            desktopNotice.close();
+        };
+    }
+
+    function unlockAudio() {
+        const Context = window.AudioContext || window.webkitAudioContext;
+        if (!Context) return;
+        if (!audioContext) audioContext = new Context();
+        if (audioContext.state === 'suspended') audioContext.resume();
+    }
+
+    function paintAlertsToggle() {
+        const on = alertsOn();
+        const label = on ? 'Desactivar alertas de impresiones por autorizar' : 'Activar alertas de impresiones por autorizar';
+        const button = $('alerts-toggle');
+        button.setAttribute('aria-pressed', String(on));
+        button.title = label;
+        button.setAttribute('aria-label', label);
+    }
+
+    $('alerts-toggle').addEventListener('click', async () => {
+        const enable = !alertsOn();
+        try { localStorage.setItem('webcups-alerts', enable ? 'on' : 'off'); } catch (e) {}
+        paintAlertsToggle();
+        if (!enable) {
+            showToast('Alertas desactivadas.');
+            return;
+        }
+
+        unlockAudio();
+        setTimeout(playChime, 150);
+
+        if (!canNotify()) {
+            showToast('Sonido activado. Para avisos de escritorio, Chrome debe tratar este sitio como seguro.', true, 9000);
+            return;
+        }
+        const permission = await Notification.requestPermission();
+        showToast(permission === 'granted'
+            ? 'Alertas activadas.'
+            : 'Sonido activado. El navegador bloqueó los avisos de escritorio.', permission !== 'granted', 7000);
+    });
+
+    // El navegador solo permite sonido después de una interacción con la página
+    document.addEventListener('pointerdown', () => { if (alertsOn()) unlockAudio(); }, { capture: true });
+    document.addEventListener('visibilitychange', paintTitle);
+    setInterval(() => {
+        blinkOn = !blinkOn;
+        if (heldCount > 0) paintTitle();
+    }, 1000);
+    paintAlertsToggle();
 
     function renderAlerts(count) {
         $('alert-banner').hidden = !count;
@@ -382,13 +544,13 @@ document.addEventListener('DOMContentLoaded', () => {
         }
     }
 
-    function showToast(message, isError) {
+    function showToast(message, isError, duration = 4000) {
         const toast = $('toast');
         toast.textContent = message;
         toast.classList.toggle('toast-error', Boolean(isError));
         toast.hidden = false;
         clearTimeout(showToast.timer);
-        showToast.timer = setTimeout(() => { toast.hidden = true; }, 4000);
+        showToast.timer = setTimeout(() => { toast.hidden = true; }, duration);
     }
 
     $('alert-ack').addEventListener('click', () => performAction('/alerts/ack', {}));

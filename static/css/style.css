@@ -1364,3 +1364,10 @@ th {
     font-style: normal;
     color: var(--accent-text);
 }
+
+/* Campana de alertas */
+#alerts-toggle[aria-pressed="true"] {
+    background: var(--accent-soft);
+    border-color: var(--accent-border);
+    color: var(--accent-text);
+}
