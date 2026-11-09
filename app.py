@@ -50,6 +50,8 @@ SPOOL_DIR = "/var/spool/cups"
 CACHE_DIR = os.environ.get("WEBCUPS_CACHE_DIR", "/tmp/webcups-cache")
 CACHE_MAX_AGE = 7 * 86400
 DB_PATH = os.environ.get("WEBCUPS_DB", "/var/lib/webcups/webcups.db")
+BACKUP_DIR = os.environ.get("WEBCUPS_BACKUP_DIR", "/var/backups/webcups")
+BACKUP_KEEP = 14
 SYNC_SECONDS = 5
 IPP_URI = os.environ.get("WEBCUPS_IPP_URI", "ipp://localhost/")
 # Cola privada conectada a la impresora: la pública apunta al destino de retención y
@@ -58,6 +60,8 @@ OUTPUT_SUFFIX = "_Salida"
 HOLD_URI = "webcups-hold:/"
 os.makedirs(CACHE_DIR, exist_ok=True)
 os.makedirs(os.path.dirname(DB_PATH), exist_ok=True)
+os.chmod(os.path.dirname(DB_PATH), 0o700)
+os.makedirs(BACKUP_DIR, mode=0o700, exist_ok=True)
 
 
 def db():
@@ -97,6 +101,7 @@ def init_db():
 
 
 init_db()
+os.chmod(DB_PATH, 0o600)
 
 
 def run_ipptool(test_file, **variables):
@@ -389,6 +394,38 @@ def purge_cache():
             os.remove(entry.path)
 
 
+def backup_db():
+    """Copia diaria consistente de la base de datos; conserva las últimas BACKUP_KEEP."""
+    target = os.path.join(BACKUP_DIR, f"webcups-{time.strftime('%Y-%m-%d')}.db")
+    if os.path.exists(target):
+        return
+
+    tmp = target + ".tmp"
+    if os.path.exists(tmp):
+        os.remove(tmp)
+
+    fd = os.open(tmp, os.O_WRONLY | os.O_CREAT, 0o600)
+    os.close(fd)
+    with closing(db()) as source, closing(sqlite3.connect(tmp)) as copy:
+        source.backup(copy)
+        if copy.execute("PRAGMA integrity_check").fetchone()[0] != "ok":
+            raise RuntimeError("la copia de seguridad no pasó la verificación de integridad")
+    os.replace(tmp, target)
+
+    copies = sorted(name for name in os.listdir(BACKUP_DIR) if re.fullmatch(r"webcups-\d{4}-\d{2}-\d{2}\.db", name))
+    for name in copies[:-BACKUP_KEEP]:
+        os.remove(os.path.join(BACKUP_DIR, name))
+
+
+def maintenance():
+    for task in (purge_cache, backup_db):
+        try:
+            task()
+        except Exception:
+            print(f"ERROR {task.__name__}:", flush=True)
+            print(traceback.format_exc(), flush=True)
+
+
 def collector_loop():
     """Sincroniza trabajos en segundo plano. El candado deja activo a un solo worker."""
     with open(DB_PATH + ".lock", "w") as lock:
@@ -401,11 +438,12 @@ def collector_loop():
 
         last_purge = 0
         while True:
+            if time.time() - last_purge > 3600:
+                maintenance()
+                last_purge = time.time()
+
             try:
                 sync_jobs()
-                if time.time() - last_purge > 3600:
-                    purge_cache()
-                    last_purge = time.time()
             except Exception:
                 print("ERROR collector:", flush=True)
                 print(traceback.format_exc(), flush=True)
